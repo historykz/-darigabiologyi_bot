@@ -18,6 +18,7 @@ class CuratorStates(StatesGroup):
     add_bulk_list = State()
     add_bulk_group = State()
     deadline_time = State()
+    get_workbook = State()
 
 
 class StudentStates(StatesGroup):
