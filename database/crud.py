@@ -193,6 +193,63 @@ async def soft_delete_student(student_id: int) -> None:
         await s.commit()
 
 
+async def purge_student_submissions(student_id: int, by: int) -> int:
+    """Удаляет (soft) все работы ученика — при удалении из группы."""
+    async with async_session() as s:
+        res = await s.execute(
+            update(Submission).where(
+                Submission.student_id == student_id, Submission.deleted_at.is_(None)
+            ).values(deleted_at=utcnow(), deleted_by=by)
+        )
+        await s.commit()
+        return res.rowcount or 0
+
+
+async def set_intro_watched(telegram_id: int) -> None:
+    async with async_session() as s:
+        await s.execute(update(Student).where(
+            Student.user_id == telegram_id, Student.is_active == True  # noqa: E712
+        ).values(intro_watched=True))
+        await s.commit()
+
+
+async def mark_welcomed(student_id: int) -> None:
+    async with async_session() as s:
+        await s.execute(update(Student).where(Student.id == student_id).values(welcomed=True))
+        await s.commit()
+
+
+async def search_students(curator_id: int, query: str) -> list[Student]:
+    """Поиск учеников куратора по части имени/фамилии/username (регистронезависимо)."""
+    q = f"%{query.strip()}%"
+    async with async_session() as s:
+        return list((await s.scalars(
+            select(Student).where(
+                Student.curator_id == curator_id,
+                Student.is_active == True,  # noqa: E712
+            ).where(
+                Student.first_name.ilike(q)
+                | Student.last_name.ilike(q)
+                | func.coalesce(Student.username, "").ilike(q)
+            ).limit(30)
+        )).all())
+
+
+async def broadcast_targets(curator_id: int | None = None) -> list[int]:
+    """user_id учеников, которым можно написать (они уже запускали бота).
+
+    curator_id=None → все ученики системы (для админа).
+    """
+    async with async_session() as s:
+        q = select(Student.user_id).where(
+            Student.is_active == True,  # noqa: E712
+            Student.user_id.is_not(None),
+        )
+        if curator_id is not None:
+            q = q.where(Student.curator_id == curator_id)
+        return [uid for uid in (await s.scalars(q)).all() if uid]
+
+
 # ─── РАБОЧИЕ ТЕТРАДИ ────────────────────────────────────────────
 
 async def next_workbook_serial() -> int:
