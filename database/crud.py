@@ -71,7 +71,7 @@ async def create_group(curator_id: int, name: str) -> Group:
 
 async def get_groups(curator_id: int | None = None) -> list[Group]:
     async with async_session() as s:
-        q = select(Group)
+        q = select(Group).where(Group.is_active == True)  # noqa: E712
         if curator_id is not None:
             q = q.where(Group.curator_id == curator_id)
         return list((await s.scalars(q.order_by(Group.id))).all())
@@ -80,6 +80,24 @@ async def get_groups(curator_id: int | None = None) -> list[Group]:
 async def get_group(group_id: int) -> Group | None:
     async with async_session() as s:
         return await s.get(Group, group_id)
+
+
+async def delete_group(group_id: int) -> int:
+    """Архивирует группу и всех её активных учеников. История сдач сохраняется.
+
+    Возвращает число удалённых учеников.
+    """
+    async with async_session() as s:
+        g = await s.get(Group, group_id)
+        if g is None:
+            return 0
+        g.is_active = False
+        res = await s.execute(
+            update(Student).where(Student.group_id == group_id, Student.is_active == True)
+            .values(is_active=False)
+        )
+        await s.commit()
+        return res.rowcount or 0
 
 
 async def count_students(group_id: int) -> int:
@@ -101,6 +119,23 @@ async def add_student(first_name: str, last_name: str, username: str | None,
         await s.commit()
         await s.refresh(st)
         return st
+
+
+async def add_students_bulk(items: list[dict], group_id: int, curator_id: int) -> int:
+    """Добавляет сразу много учеников за одну транзакцию (для больших списков).
+
+    items: [{first, last, username, user_id}, ...]. Возвращает число добавленных.
+    """
+    async with async_session() as s:
+        objs = [
+            Student(first_name=it["first"], last_name=it.get("last", ""),
+                    username=it.get("username"), user_id=it.get("user_id"),
+                    group_id=group_id, curator_id=curator_id)
+            for it in items
+        ]
+        s.add_all(objs)
+        await s.commit()
+        return len(objs)
 
 
 async def get_students(curator_id: int | None = None,
@@ -126,6 +161,32 @@ async def get_student_by_tg(telegram_id: int) -> Student | None:
         )).first()
 
 
+async def bind_student_by_username(username: str, telegram_id: int) -> Student | None:
+    """Привязывает Telegram ID к ученику, добавленному ранее по @username.
+
+    Вызывается при /start ученика: если куратор добавил его по @username,
+    то user_id был пустым — теперь подставляем реальный ID, и бот его узнаёт.
+    """
+    if not username:
+        return None
+    uname = username.lstrip("@").lower()
+    async with async_session() as s:
+        # сначала точное совпадение по username, у которого ещё нет user_id
+        st = (await s.scalars(
+            select(Student).where(
+                func.lower(Student.username) == uname,
+                Student.is_active == True,
+            )
+        )).first()
+        if st is None:
+            return None
+        if st.user_id is None or st.user_id != telegram_id:
+            st.user_id = telegram_id
+            await s.commit()
+            await s.refresh(st)
+        return st
+
+
 async def soft_delete_student(student_id: int) -> None:
     async with async_session() as s:
         await s.execute(update(Student).where(Student.id == student_id).values(is_active=False))
@@ -147,6 +208,22 @@ async def add_workbook(serial: int, topic: str, file_id: str) -> Workbook:
         await s.commit()
         await s.refresh(wb)
         return wb
+
+
+async def get_workbook(wb_id: int) -> Workbook | None:
+    async with async_session() as s:
+        return await s.get(Workbook, wb_id)
+
+
+async def delete_workbook(wb_id: int) -> bool:
+    """Полностью удаляет рабочую тетрадь (если загружена по ошибке)."""
+    async with async_session() as s:
+        wb = await s.get(Workbook, wb_id)
+        if wb is None:
+            return False
+        await s.delete(wb)
+        await s.commit()
+        return True
 
 
 async def get_workbooks() -> list[Workbook]:
@@ -230,6 +307,20 @@ async def hide_all_for_curator(curator_id: int, group_id: int | None = None) -> 
 async def get_submission(sub_id: int) -> Submission | None:
     async with async_session() as s:
         return await s.get(Submission, sub_id)
+
+
+async def submitted_student_ids(curator_id: int, since_utc, until_utc) -> set[int]:
+    """Один запрос: id учеников куратора, сдавших в окне [since, until]."""
+    async with async_session() as s:
+        rows = await s.scalars(
+            select(Submission.student_id).where(
+                Submission.curator_id == curator_id,
+                Submission.deleted_at.is_(None),
+                Submission.submitted_at_utc >= since_utc,
+                Submission.submitted_at_utc <= until_utc,
+            )
+        )
+        return set(rows.all())
 
 
 # ─── ДЕДЛАЙНЫ ───────────────────────────────────────────────────
