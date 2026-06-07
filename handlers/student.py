@@ -26,27 +26,27 @@ router.callback_query.filter(RoleFilter("student"))
 
 @router.message(F.text == "📚 Рабочие тетради")
 async def list_workbooks(message: Message, state: FSMContext):
+    await state.clear()
     wbs = await crud.get_workbooks()
     if not wbs:
         await message.answer("📚 Пока нет загруженных рабочих тетрадей.")
         return
-    lines = ["📚 Доступные рабочие тетради:\n"]
-    for w in wbs:
-        lines.append(f"   №{w.serial:03d} — {w.topic}")
-    lines.append("\nНапиши серийный номер — я сразу пришлю PDF 👇")
-    await message.answer("\n".join(lines))
-    await state.set_state(StudentStates.get_workbook)
+    rows = [[InlineKeyboardButton(text=f"📄 №{w.serial:03d} — {w.topic}",
+                                  callback_data=f"wb_send:{w.id}")] for w in wbs]
+    await message.answer(
+        "📚 Доступные рабочие тетради:\nНажми на нужную — пришлю PDF 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@router.message(StudentStates.get_workbook, F.text.regexp(r"^\s*№?\s*\d+\s*$"))
-async def send_workbook(message: Message, state: FSMContext):
-    serial = int("".join(ch for ch in message.text if ch.isdigit()))
-    wb = await crud.get_workbook_by_serial(serial)
+@router.callback_query(F.data.startswith("wb_send:"))
+async def send_workbook_btn(call: CallbackQuery):
+    await call.answer()
+    wb_id = int(call.data.split(":")[1])
+    wb = await crud.get_workbook(wb_id)
     if not wb:
-        await message.answer("❌ Такого номера нет. Выбери номер из списка выше.")
+        await call.message.answer("❌ Эта тетрадь больше недоступна.")
         return
-    await message.answer_document(wb.file_id, caption=f"📄 №{wb.serial:03d} — {wb.topic}")
-    await state.clear()
+    await call.message.answer_document(wb.file_id, caption=f"📄 №{wb.serial:03d} — {wb.topic}")
 
 
 # ─── СДАТЬ РТ ───────────────────────────────────────────────────
