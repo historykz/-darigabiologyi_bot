@@ -23,11 +23,18 @@ async def init_db() -> None:
 def _ensure_columns(sync_conn) -> None:
     """Idempotent ALTER TABLE для колонок, добавленных после первого деплоя."""
     insp = inspect(sync_conn)
-    if "submissions" not in insp.get_table_names():
-        return
-    cols = {c["name"] for c in insp.get_columns("submissions")}
-    if "hidden_for_curator" not in cols:
-        # bool как 0/1 совместимо и с PostgreSQL, и со SQLite
-        sync_conn.execute(text(
-            "ALTER TABLE submissions ADD COLUMN hidden_for_curator BOOLEAN DEFAULT FALSE"
-        ))
+    tables = insp.get_table_names()
+
+    if "submissions" in tables:
+        cols = {c["name"] for c in insp.get_columns("submissions")}
+        if "hidden_for_curator" not in cols:
+            sync_conn.execute(text(
+                "ALTER TABLE submissions ADD COLUMN hidden_for_curator BOOLEAN DEFAULT FALSE"
+            ))
+
+    if "groups" in tables:
+        cols = {c["name"] for c in insp.get_columns("groups")}
+        if "is_active" not in cols:
+            sync_conn.execute(text(
+                "ALTER TABLE groups ADD COLUMN is_active BOOLEAN DEFAULT TRUE"
+            ))
