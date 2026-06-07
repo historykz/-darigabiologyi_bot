@@ -29,17 +29,12 @@ def _deadline_dt_local(weekday: int, hhmm_utc: str, ref: datetime) -> datetime:
 
 
 async def _non_submitters(curator_id: int, deadline_local: datetime):
-    """Ученики куратора без сдачи за неделю до дедлайна."""
+    """Ученики куратора без сдачи за неделю до дедлайна (один запрос на всех)."""
     students = await crud.get_students(curator_id=curator_id)
     week_start = (deadline_local - timedelta(days=7)).astimezone(timezone.utc)
     deadline_utc = deadline_local.astimezone(timezone.utc)
-    result = []
-    for st in students:
-        subs = await crud.get_submissions(student_id=st.id)
-        recent = [x for x in subs if week_start <= x.submitted_at_utc <= deadline_utc]
-        if not recent:
-            result.append(st)
-    return result
+    submitted = await crud.submitted_student_ids(curator_id, week_start, deadline_utc)
+    return [st for st in students if st.id not in submitted]
 
 
 async def _check_reminders(bot: Bot) -> None:
@@ -104,34 +99,36 @@ async def _send_report(bot: Bot, curator_id: int, deadline_local: datetime) -> N
 
     for g in groups:
         students = await crud.get_students(curator_id=curator_id, group_id=g.id)
+        # все сдачи группы за период — одним запросом
+        subs = await crud.get_submissions(curator_id=curator_id, group_id=g.id)
+        last_by_student = {}
+        for sub in subs:  # desc по дате
+            if week_start <= sub.submitted_at_utc <= deadline_utc + timedelta(days=1):
+                last_by_student.setdefault(sub.student_id, sub)
+
         on_time, late, missing = [], [], []
         for st in students:
-            subs = await crud.get_submissions(student_id=st.id)
-            recent = [x for x in subs if week_start <= x.submitted_at_utc <= deadline_utc + timedelta(days=1)]
-            if not recent:
+            last = last_by_student.get(st.id)
+            if last is None:
                 missing.append(st)
-                continue
-            last = recent[0]
-            if last.is_late:
+            elif last.is_late:
                 late.append((st, last))
             else:
                 on_time.append((st, last))
 
         lines = [f"📊 Итоги недели {d_from}–{d_to}", f"Группа «{g.name}»", ""]
-        lines.append(f"✅ Сдали вовремя ({len(on_time)} из {len(students)}):")
-        for st, sub in on_time:
-            lines.append(f"  • {st.first_name} {st.last_name} · {roles.to_local(sub.submitted_at_utc):%H:%M}")
-        lines.append("")
-        lines.append(f"⚠️ Просрочили ({len(late)}):")
-        for st, sub in late:
+        lines.append(f"✅ Сдали вовремя: {len(on_time)} из {len(students)}")
+        lines.append(f"⚠️ Просрочили: {len(late)}")
+        for st, sub in late[:50]:
             lines.append(f"  • {st.first_name} {st.last_name} — +{sub.late_by_minutes} мин")
-        lines.append("")
-        lines.append(f"❌ Не сдали ({len(missing)}):")
-        for st in missing:
+        lines.append(f"❌ Не сдали: {len(missing)}")
+        for st in missing[:50]:
             lines.append(f"  • {st.first_name} {st.last_name}")
+        if len(missing) > 50 or len(late) > 50:
+            lines.append("… полный список — в разделе «📥 Кто сдал».")
 
         try:
-            await bot.send_message(curator_id, "\n".join(lines))
+            await bot.send_message(curator_id, "\n".join(lines)[:4000])
         except Exception:
             pass
 
