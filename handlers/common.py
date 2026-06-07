@@ -25,6 +25,10 @@ async def cmd_start(message: Message, state: FSMContext):
             await crud.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name, role="curator")
             await crud.set_setting(f"pending_curator:{tg.username.lower()}", "")
 
+    # привязка ученика, добавленного куратором по @username (узнаём его Telegram ID)
+    if tg.username:
+        await crud.bind_student_by_username(tg.username, tg.id)
+
     role = await roles.get_role(tg.id)
 
     if role == "admin":
