@@ -8,7 +8,7 @@ from database import crud
 from keyboards.admin_kb import admin_menu
 from keyboards.curator_kb import curator_menu
 from keyboards.student_kb import student_menu
-from services import roles
+from services import notifications, roles
 
 router = Router()
 
@@ -60,11 +60,17 @@ async def cmd_start(message: Message, state: FSMContext):
 
     if role == "student":
         st = await crud.get_student_by_tg(tg.id)
-        # привяжем username, если изменился
         await crud.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name)
         group = await crud.get_group(st.group_id)
         curator = await crud.get_user_by_tg(st.curator_id)
         cur_name = (curator.first_name if curator and curator.first_name else "куратора")
+
+        video = await crud.get_setting("intro_video")
+        # если есть видео-инструкция и ученик её ещё не отметил — показываем её
+        if video and not st.intro_watched:
+            await notifications.send_student_welcome(message.bot, st)
+            return
+
         await message.answer(
             f"👋 Привет, {st.first_name}! Ты в группе «{group.name if group else '—'}» "
             f"у куратора {cur_name}.",
