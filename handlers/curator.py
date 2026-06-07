@@ -74,11 +74,131 @@ async def my_students(message: Message, state: FSMContext):
     for g in groups:
         sts = await crud.get_students(curator_id=message.from_user.id, group_id=g.id)
         lines.append(f"📂 {g.name} ({len(sts)} чел.)")
-        for st in sts:
+        for st in sts[:40]:
             uname = f" (@{st.username})" if st.username else ""
             lines.append(f"   • {st.first_name} {st.last_name}{uname}")
+        if len(sts) > 40:
+            lines.append(f"   … и ещё {len(sts) - 40}")
         lines.append("")
-    await message.answer("\n".join(lines))
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="➕ Добавить", callback_data="cur_add_open"),
+        InlineKeyboardButton(text="➖ Удалить", callback_data="cur_del_menu"),
+    ]])
+    await message.answer("\n".join(lines)[:4000], reply_markup=kb)
+
+
+@router.callback_query(F.data == "cur_add_open")
+async def add_open_cb(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await call.message.answer("Кого добавить?", reply_markup=add_choice())
+
+
+# ─── УДАЛЕНИЕ УЧЕНИКОВ / ГРУПП ──────────────────────────────────
+
+@router.callback_query(F.data == "cur_del_menu")
+async def del_menu(call: CallbackQuery):
+    await call.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Одного ученика", callback_data="cur_del_one")],
+        [InlineKeyboardButton(text="📂 Группу целиком", callback_data="cur_del_group")],
+    ])
+    await call.message.answer("Что удалить?", reply_markup=kb)
+
+
+@router.callback_query(F.data == "cur_del_one")
+async def del_one_pick_group(call: CallbackQuery):
+    await call.answer()
+    groups = await crud.get_groups(curator_id=call.from_user.id)
+    if not groups:
+        await call.message.answer("Нет групп.")
+        return
+    await call.message.answer("📂 Из какой группы удалить ученика?",
+                              reply_markup=groups_inline(groups, "cur_delone_grp"))
+
+
+@router.callback_query(F.data.startswith("cur_delone_grp:"))
+async def del_one_list(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    students = await crud.get_students(curator_id=call.from_user.id, group_id=gid)
+    if not students:
+        await call.message.answer("В этой группе нет учеников.")
+        return
+    rows = [[InlineKeyboardButton(
+        text=f"🗑 {st.first_name} {st.last_name}", callback_data=f"cur_delst:{st.id}")]
+        for st in students[:60]]
+    await call.message.answer("Кого удалить? (история его работ сохранится)",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_delst:"))
+async def del_one_confirm(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    st = await crud.get_student(sid)
+    if not st or st.curator_id != call.from_user.id:
+        await call.message.answer("❌ Ученик не найден.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да", callback_data=f"cur_delst_yes:{sid}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cur_cancel"),
+    ]])
+    await call.message.answer(f"Удалить {st.first_name} {st.last_name}? История его работ сохранится.",
+                              reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_delst_yes:"))
+async def del_one_do(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    st = await crud.get_student(sid)
+    if not st or st.curator_id != call.from_user.id:
+        await call.message.answer("❌ Ученик не найден.")
+        return
+    await crud.soft_delete_student(sid)
+    await call.message.answer(f"✅ {st.first_name} {st.last_name} удалён из группы.")
+
+
+@router.callback_query(F.data == "cur_del_group")
+async def del_group_pick(call: CallbackQuery):
+    await call.answer()
+    groups = await crud.get_groups(curator_id=call.from_user.id)
+    if not groups:
+        await call.message.answer("Нет групп.")
+        return
+    await call.message.answer("📂 Какую группу удалить целиком?",
+                              reply_markup=groups_inline(groups, "cur_delgrp"))
+
+
+@router.callback_query(F.data.startswith("cur_delgrp:"))
+async def del_group_confirm(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    n = await crud.count_students(gid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"cur_delgrp_yes:{gid}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cur_cancel"),
+    ]])
+    await call.message.answer(
+        f"🗑 Удалить группу «{g.name}» вместе с {n} учениками?\n"
+        "История сданных работ сохранится в системе.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_delgrp_yes:"))
+async def del_group_do(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    n = await crud.delete_group(gid)
+    await call.message.answer(f"✅ Группа «{g.name}» удалена ({n} учеников). История работ сохранена.")
 
 
 # ─── ДОБАВЛЕНИЕ УЧЕНИКОВ ────────────────────────────────────────
@@ -132,7 +252,11 @@ async def add_one_finish(call: CallbackQuery, state: FSMContext):
         user_id=data.get("user_id"), group_id=gid, curator_id=call.from_user.id,
     )
     uname = f" (@{st.username})" if st.username else (f" ({st.user_id})" if st.user_id else "")
-    await call.message.answer(f"✅ {st.first_name} {st.last_name}{uname} добавлен в группу «{g.name}».")
+    await call.message.answer(
+        f"✅ {st.first_name} {st.last_name}{uname} добавлен в группу «{g.name}».\n\n"
+        "❗ Передай ученику: пусть откроет бота и нажмёт /start — "
+        "только после этого бот его узнает (бот не может написать первым)."
+    )
     await state.clear()
 
 
@@ -145,7 +269,8 @@ async def add_bulk_start(call: CallbackQuery, state: FSMContext):
         "Отправь список в формате:\n"
         "@username — Имя Фамилия\n"
         "123456789 — Имя Фамилия\n\n"
-        "До 10 человек за раз.\n\n"
+        "До 100 человек за одно сообщение. Для тысяч — отправляй такими списками "
+        "по очереди, бот примет все.\n\n"
         "📝 Пример:\n"
         "@almas_b — Алмас Берков\n"
         "@dana_n — Дана Нурова\n"
@@ -157,11 +282,11 @@ async def add_bulk_start(call: CallbackQuery, state: FSMContext):
 async def add_bulk_parse(message: Message, state: FSMContext):
     rows = [r.strip() for r in message.text.splitlines() if r.strip()]
     parsed = []
-    errors = []
-    for r in rows[:10]:
+    errors = 0
+    for r in rows[:100]:
         m = re.split(r"\s*[—\-–]\s*", r, maxsplit=1)
         if len(m) != 2:
-            errors.append(r)
+            errors += 1
             continue
         contact, name = m[0].strip(), m[1].strip()
         username, user_id = _parse_contact(contact)
@@ -176,11 +301,13 @@ async def add_bulk_parse(message: Message, state: FSMContext):
         return
 
     await state.update_data(bulk=parsed)
-    lines = [f"✅ Распознано {len(parsed)} учеников:"]
-    for i, p in enumerate(parsed, start=1):
+    lines = [f"✅ Распознано {len(parsed)} учеников."]
+    for i, p in enumerate(parsed[:15], start=1):
         lines.append(f"   {i}. {p['contact']} — {p['first']} {p['last']}")
-    for e in errors:
-        lines.append(f"⚠️ Строка не распознана: «{e}»")
+    if len(parsed) > 15:
+        lines.append(f"   … и ещё {len(parsed) - 15}")
+    if errors:
+        lines.append(f"⚠️ Не распознано строк: {errors}")
     lines.append("\nВ какую группу добавить?")
     groups = await crud.get_groups(curator_id=message.from_user.id)
     await state.set_state(CuratorStates.add_bulk_group)
@@ -193,20 +320,19 @@ async def add_bulk_finish(call: CallbackQuery, state: FSMContext):
     gid = int(call.data.split(":")[1])
     data = await state.get_data()
     g = await crud.get_group(gid)
-    added = []
-    for p in data.get("bulk", []):
-        st = await crud.add_student(
-            first_name=p["first"], last_name=p["last"], username=p.get("username"),
-            user_id=p.get("user_id"), group_id=gid, curator_id=call.from_user.id,
-        )
-        added.append(st)
+    items = data.get("bulk", [])
+    n = await crud.add_students_bulk(items, group_id=gid, curator_id=call.from_user.id)
     total = await crud.count_students(gid)
-    lines = [f"✅ Добавлено {len(added)} учеников в «{g.name}»:"]
-    for st in added:
-        tail = f"(@{st.username})" if st.username else (f"({st.user_id})" if st.user_id else "")
-        lines.append(f"   ✅ {st.first_name} {st.last_name} {tail}")
+    lines = [f"✅ Добавлено {n} учеников в «{g.name}»."]
+    for p in items[:15]:
+        tail = f"(@{p['username']})" if p.get("username") else (f"({p['user_id']})" if p.get("user_id") else "")
+        lines.append(f"   ✅ {p['first']} {p['last']} {tail}")
+    if n > 15:
+        lines.append(f"   … и ещё {n - 15}")
     lines.append(f"\nВсего в группе: {total} учеников.")
-    await call.message.answer("\n".join(lines))
+    lines.append("\n❗ Каждый ученик должен сам открыть бота и нажать /start "
+                 "(по тому же @username), тогда бот его узнает. Написать им первым бот не может.")
+    await call.message.answer("\n".join(lines)[:4000])
     await state.clear()
 
 
@@ -283,7 +409,7 @@ async def open_submission(call: CallbackQuery):
     )
 
 
-# ─── РАБОЧИЕ ТЕТРАДИ (просмотр) ─────────────────────────────────
+# ─── РАБОЧИЕ ТЕТРАДИ (просмотр + скачивание) ────────────────────
 
 @router.message(F.text == "📚 Рабочие тетради")
 async def curator_workbooks(message: Message, state: FSMContext):
@@ -292,10 +418,22 @@ async def curator_workbooks(message: Message, state: FSMContext):
     if not wbs:
         await message.answer("📚 Администратор пока не загрузил тетради.")
         return
-    lines = ["📚 Рабочие тетради:"]
-    for w in wbs:
-        lines.append(f"   №{w.serial:03d} — {w.topic}")
-    await message.answer("\n".join(lines))
+    rows = [[InlineKeyboardButton(text=f"📄 №{w.serial:03d} — {w.topic}",
+                                  callback_data=f"wb_send:{w.id}")] for w in wbs]
+    await message.answer(
+        "📚 Рабочие тетради:\nНажми на нужную — пришлю PDF 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("wb_send:"))
+async def curator_send_workbook_btn(call: CallbackQuery):
+    await call.answer()
+    wb_id = int(call.data.split(":")[1])
+    wb = await crud.get_workbook(wb_id)
+    if not wb:
+        await call.message.answer("❌ Эта тетрадь больше недоступна.")
+        return
+    await call.message.answer_document(wb.file_id, caption=f"📄 №{wb.serial:03d} — {wb.topic}")
 
 
 # ─── ДЕДЛАЙН ────────────────────────────────────────────────────
