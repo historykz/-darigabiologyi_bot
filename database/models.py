@@ -57,6 +57,8 @@ class Student(Base):
     last_name: Mapped[str] = mapped_column(String(128), default="")
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    intro_watched: Mapped[bool] = mapped_column(Boolean, default=False)
+    welcomed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     group: Mapped["Group"] = relationship(back_populates="students")
 
