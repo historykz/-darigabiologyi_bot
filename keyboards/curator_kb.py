@@ -12,6 +12,7 @@ def curator_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📂 Мои группы"), KeyboardButton(text="👥 Мои ученики")],
             [KeyboardButton(text="📥 Кто сдал"), KeyboardButton(text="📚 Рабочие тетради")],
             [KeyboardButton(text="📅 Дедлайн"), KeyboardButton(text="➕ Добавить")],
+            [KeyboardButton(text="🔍 Найти ученика"), KeyboardButton(text="📢 Рассылка")],
             [KeyboardButton(text="🗑 Удалить запись")],
         ],
         resize_keyboard=True,
