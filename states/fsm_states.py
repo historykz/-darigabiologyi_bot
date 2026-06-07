@@ -8,6 +8,8 @@ class AdminStates(StatesGroup):
     workbook_wait_topic = State()
     restore_wait_file = State()
     gsheet_wait_url = State()
+    intro_video_wait = State()
+    broadcast = State()
 
 
 class CuratorStates(StatesGroup):
@@ -19,6 +21,8 @@ class CuratorStates(StatesGroup):
     add_bulk_group = State()
     deadline_time = State()
     get_workbook = State()
+    search = State()
+    broadcast = State()
 
 
 class StudentStates(StatesGroup):
