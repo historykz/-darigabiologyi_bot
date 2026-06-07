@@ -19,7 +19,7 @@ from keyboards.curator_kb import (
     groups_inline,
     weekdays_kb,
 )
-from services import roles
+from services import notifications, roles
 from states.fsm_states import CuratorStates
 
 router = Router()
@@ -148,15 +148,27 @@ async def del_one_confirm(call: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("cur_delst_yes:"))
-async def del_one_do(call: CallbackQuery):
+async def del_one_do(call: CallbackQuery, bot: Bot):
     await call.answer()
     sid = int(call.data.split(":")[1])
     st = await crud.get_student(sid)
     if not st or st.curator_id != call.from_user.id:
         await call.message.answer("❌ Ученик не найден.")
         return
+    group = await crud.get_group(st.group_id)
+    await crud.purge_student_submissions(sid, by=call.from_user.id)
     await crud.soft_delete_student(sid)
-    await call.message.answer(f"✅ {st.first_name} {st.last_name} удалён из группы.")
+    # уведомляем ученика, если он запускал бота
+    if st.user_id:
+        try:
+            await bot.send_message(
+                st.user_id,
+                f"🚫 Тебя удалили из группы «{group.name if group else '—'}».\n"
+                "Доступ к рабочим тетрадям закрыт. По вопросам обратись к куратору.")
+        except Exception:
+            pass
+    await call.message.answer(
+        f"✅ {st.first_name} {st.last_name} удалён. Его работы убраны, доступ к боту закрыт.")
 
 
 @router.callback_query(F.data == "cur_del_group")
@@ -190,15 +202,29 @@ async def del_group_confirm(call: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("cur_delgrp_yes:"))
-async def del_group_do(call: CallbackQuery):
+async def del_group_do(call: CallbackQuery, bot: Bot):
     await call.answer()
     gid = int(call.data.split(":")[1])
     g = await crud.get_group(gid)
     if not g or g.curator_id != call.from_user.id:
         await call.message.answer("❌ Группа не найдена.")
         return
+    students = await crud.get_students(curator_id=call.from_user.id, group_id=gid)
+    # зачистка работ + уведомления
+    for st in students:
+        await crud.purge_student_submissions(st.id, by=call.from_user.id)
+        if st.user_id:
+            try:
+                await bot.send_message(
+                    st.user_id,
+                    f"🚫 Группа «{g.name}» расформирована, ты удалён(а) из неё.\n"
+                    "Доступ к боту закрыт. По вопросам обратись к куратору.")
+            except Exception:
+                pass
     n = await crud.delete_group(gid)
-    await call.message.answer(f"✅ Группа «{g.name}» удалена ({n} учеников). История работ сохранена.")
+    await call.message.answer(
+        f"✅ Группа «{g.name}» удалена ({n} учеников). Их работы убраны, доступ закрыт. "
+        "История сохранена в системе.")
 
 
 # ─── ДОБАВЛЕНИЕ УЧЕНИКОВ ────────────────────────────────────────
@@ -242,7 +268,7 @@ async def add_one_contact(message: Message, state: FSMContext):
 
 
 @router.callback_query(CuratorStates.add_one_group, F.data.startswith("cur_addone_grp:"))
-async def add_one_finish(call: CallbackQuery, state: FSMContext):
+async def add_one_finish(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     gid = int(call.data.split(":")[1])
     data = await state.get_data()
@@ -252,11 +278,16 @@ async def add_one_finish(call: CallbackQuery, state: FSMContext):
         user_id=data.get("user_id"), group_id=gid, curator_id=call.from_user.id,
     )
     uname = f" (@{st.username})" if st.username else (f" ({st.user_id})" if st.user_id else "")
+
+    # авто-приветствие: если знаем Telegram ID — пишем сразу
+    delivered = await notifications.send_student_welcome(bot, st)
+    if delivered:
+        note = "📨 Ученику отправлено приветствие и видео-инструкция."
+    else:
+        note = ("❗ Передай ученику: пусть откроет бота и нажмёт /start (по тому же @username) — "
+                "тогда он получит приветствие и видео-инструкцию. Бот не может написать первым.")
     await call.message.answer(
-        f"✅ {st.first_name} {st.last_name}{uname} добавлен в группу «{g.name}».\n\n"
-        "❗ Передай ученику: пусть откроет бота и нажмёт /start — "
-        "только после этого бот его узнает (бот не может написать первым)."
-    )
+        f"✅ {st.first_name} {st.last_name}{uname} добавлен в группу «{g.name}».\n\n{note}")
     await state.clear()
 
 
@@ -334,6 +365,84 @@ async def add_bulk_finish(call: CallbackQuery, state: FSMContext):
                  "(по тому же @username), тогда бот его узнает. Написать им первым бот не может.")
     await call.message.answer("\n".join(lines)[:4000])
     await state.clear()
+
+
+# ─── ПОИСК УЧЕНИКА ──────────────────────────────────────────────
+
+@router.message(F.text == "🔍 Найти ученика")
+async def search_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(CuratorStates.search)
+    await message.answer("🔍 Введи имя или фамилию ученика (можно часть):")
+
+
+@router.message(CuratorStates.search, F.text)
+async def search_do(message: Message, state: FSMContext):
+    await state.clear()
+    found = await crud.search_students(message.from_user.id, message.text)
+    if not found:
+        await message.answer("Никого не нашёл. Попробуй другое имя.")
+        return
+    lines = [f"🔍 Найдено {len(found)}:"]
+    rows = []
+    for st in found:
+        grp = await crud.get_group(st.group_id)
+        uname = f" (@{st.username})" if st.username else ""
+        lines.append(f"   • {st.first_name} {st.last_name}{uname} — {grp.name if grp else '—'}")
+        rows.append([InlineKeyboardButton(
+            text=f"📂 Работы {st.first_name} {st.last_name}", callback_data=f"cur_stwork:{st.id}")])
+    await message.answer("\n".join(lines)[:4000],
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_stwork:"))
+async def student_works(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    st = await crud.get_student(sid)
+    if not st or st.curator_id != call.from_user.id:
+        await call.message.answer("❌ Ученик не найден.")
+        return
+    subs = await crud.get_submissions(student_id=sid, curator_id=call.from_user.id)
+    if not subs:
+        await call.message.answer(f"👤 {st.first_name} {st.last_name}\nРабот пока нет.")
+        return
+    lines = [f"👤 {st.first_name} {st.last_name} — работы:"]
+    rows = []
+    for i, sub in enumerate(subs, start=1):
+        mark = " ⚠️" if sub.is_late else ""
+        lines.append(f"   📤 #{i} — {roles.fmt_absolute(sub.submitted_at_utc)}{mark}")
+        rows.append([InlineKeyboardButton(text=f"📄 Открыть #{i}", callback_data=f"open_sub:{sub.id}")])
+    await call.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+# ─── РАССЫЛКА (объявление ученикам) ─────────────────────────────
+
+@router.message(F.text == "📢 Рассылка")
+async def broadcast_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(CuratorStates.broadcast)
+    await message.answer(
+        "📢 Напиши текст объявления — я отправлю его всем твоим ученикам, "
+        "которые уже запускали бота.\n\nИли /cancel чтобы отменить.")
+
+
+@router.message(CuratorStates.broadcast, F.text)
+async def broadcast_do(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    text = message.text
+    targets = await crud.broadcast_targets(curator_id=message.from_user.id)
+    if not targets:
+        await message.answer("Пока некому отправлять — ученики ещё не запускали бота.")
+        return
+    sent = 0
+    for uid in targets:
+        try:
+            await bot.send_message(uid, f"📢 Сообщение от куратора:\n\n{text}")
+            sent += 1
+        except Exception:
+            pass
+    await message.answer(f"✅ Объявление отправлено: {sent} из {len(targets)} учеников.")
 
 
 # ─── КТО СДАЛ ───────────────────────────────────────────────────
