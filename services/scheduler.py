@@ -58,10 +58,11 @@ async def _check_reminders(bot: Bot) -> None:
             "r3": deadline_local - timedelta(minutes=30),
         }
         texts = {
-            "r1": ("⏰ Напоминание!\nДедлайн сдачи рабочей тетради сегодня в "
-                   f"{deadline_local:%H:%M}.\nТы ещё не сдал(а) работу."),
+            "r1": ("⏰ Привет! Небольшое напоминание 🙂\n"
+                   f"Сегодня в {deadline_local:%H:%M} дедлайн сдачи рабочей тетради, "
+                   "а ты ещё не сдал(а). Время есть — справишься! 💪"),
             "r2": ("⚠️ До дедлайна меньше 2 часов!\nТы ещё не сдал(а) рабочую тетрадь.\n"
-                   "Сдай сейчас — потом будет поздно."),
+                   "Лучше сдать сейчас, чтобы не переживать 🙏"),
             "r3": ("🚨 Осталось около 30 минут!\nПосле дедлайна сдача будет отмечена "
                    "как просроченная.\nСдай прямо сейчас 👇"),
         }
@@ -73,13 +74,32 @@ async def _check_reminders(bot: Bot) -> None:
             if mark in _sent:
                 continue
             _sent.add(mark)
-            for st in await _non_submitters(dl.curator_id, deadline_local):
+
+            non_sub = await _non_submitters(dl.curator_id, deadline_local)
+            non_sub_ids = {st.id for st in non_sub}
+            for st in non_sub:
                 if not st.user_id:
                     continue
                 try:
                     await bot.send_message(st.user_id, texts[tag], reply_markup=submit_kb)
                 except Exception:
                     pass
+
+            # тем, кто УЖЕ сдал — один дружелюбный месседж на первом напоминании, без спама
+            if tag == "r1":
+                students = await crud.get_students(curator_id=dl.curator_id)
+                for st in students:
+                    if st.id in non_sub_ids or not st.user_id:
+                        continue
+                    try:
+                        await bot.send_message(
+                            st.user_id,
+                            "🌟 Молодец, ты уже сдал(а) рабочую тетрадь на этой неделе!\n"
+                            "Заодно проверь, что отправил(а) все домашние задания куратору. "
+                            "Хорошего дня! 😊",
+                        )
+                    except Exception:
+                        pass
 
         # итоговый отчёт куратору через 2 минуты после дедлайна
         report_t = deadline_local + timedelta(minutes=2)
