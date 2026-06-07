@@ -47,3 +47,49 @@ async def notify_admin(bot: Bot, text: str) -> None:
         await bot.send_message(ADMIN_ID, text)
     except Exception:
         pass
+
+
+def intro_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Я посмотрел(а)", callback_data="intro_done")
+    ]])
+
+
+async def send_student_welcome(bot: Bot, student) -> bool:
+    """Приветствие ученику при добавлении/первом старте: куратор, группа, видео-инструкция.
+
+    Возвращает True, если сообщение доставлено (ученик уже запускал бота).
+    """
+    if not student.user_id:
+        return False  # бот не может написать первым — отправим при /start
+
+    group = await crud.get_group(student.group_id)
+    curator = await crud.get_user_by_tg(student.curator_id)
+    cur_name = (curator.first_name if curator and curator.first_name else "куратор")
+    group_name = group.name if group else "—"
+
+    text = (
+        f"👋 Привет, {student.first_name}! Тебя добавили в учебного бота.\n\n"
+        f"📂 Группа: {group_name}\n"
+        f"👨‍🏫 Куратор: {cur_name}\n\n"
+    )
+
+    video = await crud.get_setting("intro_video")
+    try:
+        if video:
+            await bot.send_video(
+                student.user_id, video,
+                caption=text + "📺 Посмотри короткую видео-инструкцию и нажми кнопку ниже 👇",
+                reply_markup=intro_keyboard(),
+            )
+        else:
+            # видео ещё не загружено админом — открываем доступ сразу
+            await crud.set_intro_watched(student.user_id)
+            await bot.send_message(
+                student.user_id,
+                text + "Можешь пользоваться ботом: смотреть рабочие тетради и сдавать РТ. 🚀",
+            )
+        await crud.mark_welcomed(student.id)
+        return True
+    except Exception:
+        return False
