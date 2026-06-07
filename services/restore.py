@@ -93,12 +93,16 @@ async def restore(data: dict) -> dict:
                 existing.first_name = st["first_name"]
                 existing.last_name = st.get("last_name", "")
                 existing.is_active = st.get("is_active", True)
+                existing.intro_watched = st.get("intro_watched", False)
+                existing.welcomed = st.get("welcomed", False)
             else:
                 s.add(Student(id=st["id"], user_id=st.get("user_id"),
                               username=st.get("username"), group_id=st["group_id"],
                               curator_id=st["curator_id"], first_name=st["first_name"],
                               last_name=st.get("last_name", ""),
                               is_active=st.get("is_active", True),
+                              intro_watched=st.get("intro_watched", False),
+                              welcomed=st.get("welcomed", False),
                               added_at=_dt(st.get("added_at"))))
             counts["students"] += 1
 
