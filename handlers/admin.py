@@ -124,15 +124,63 @@ async def adm_cancel(call: CallbackQuery):
 async def workbooks(message: Message, state: FSMContext):
     await state.clear()
     wbs = await crud.get_workbooks()
-    lines = ["📚 Рабочие тетради:"]
+    rows = []
     if wbs:
         for w in wbs:
-            lines.append(f"   №{w.serial:03d} — {w.topic}")
-    else:
-        lines.append("   (пока пусто)")
-    lines.append("\nЧтобы загрузить новую — пришли PDF-файл 👇")
-    await message.answer("\n".join(lines))
+            rows.append([
+                InlineKeyboardButton(text=f"📄 №{w.serial:03d} — {w.topic}",
+                                     callback_data=f"wb_send:{w.id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"adm_delwb:{w.id}"),
+            ])
+    head = "📚 Рабочие тетради:\nНажми 📄 — пришлю PDF, 🗑 — удалить.\n\nЧтобы загрузить новую — пришли PDF-файл 👇"
+    if not wbs:
+        head = "📚 Рабочих тетрадей пока нет.\nЧтобы загрузить — пришли PDF-файл 👇"
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    await message.answer(head, reply_markup=kb)
     await state.set_state(AdminStates.workbook_wait_pdf)
+
+
+@router.callback_query(F.data.startswith("wb_send:"))
+async def admin_send_workbook(call: CallbackQuery):
+    await call.answer()
+    wb_id = int(call.data.split(":")[1])
+    wb = await crud.get_workbook(wb_id)
+    if not wb:
+        await call.message.answer("❌ Эта тетрадь больше недоступна.")
+        return
+    await call.message.answer_document(wb.file_id, caption=f"📄 №{wb.serial:03d} — {wb.topic}")
+
+
+@router.callback_query(F.data.startswith("adm_delwb:"))
+async def workbook_del_confirm(call: CallbackQuery):
+    await call.answer()
+    wb_id = int(call.data.split(":")[1])
+    wb = await crud.get_workbook(wb_id)
+    if not wb:
+        await call.message.answer("❌ Тетрадь не найдена.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"adm_delwbyes:{wb_id}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel"),
+    ]])
+    await call.message.answer(
+        f"🗑 Удалить рабочую тетрадь №{wb.serial:03d} — «{wb.topic}»?\n"
+        "Она пропадёт из списка у всех учеников.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm_delwbyes:"))
+async def workbook_del_do(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    wb_id = int(call.data.split(":")[1])
+    wb = await crud.get_workbook(wb_id)
+    serial = wb.serial if wb else wb_id
+    ok = await crud.delete_workbook(wb_id)
+    if ok:
+        await call.message.answer(f"✅ Рабочая тетрадь №{serial:03d} удалена.")
+    else:
+        await call.message.answer("❌ Не удалось удалить — возможно, уже удалена.")
 
 
 @router.message(AdminStates.workbook_wait_pdf, F.document)
