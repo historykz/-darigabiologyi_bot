@@ -46,6 +46,8 @@ async def collect() -> dict:
              "group_id": st.group_id, "curator_id": st.curator_id,
              "first_name": st.first_name, "last_name": st.last_name,
              "is_active": st.is_active,
+             "intro_watched": getattr(st, "intro_watched", False),
+             "welcomed": getattr(st, "welcomed", False),
              "added_at": st.added_at.isoformat() if st.added_at else None}
             for st in students
         ],
