@@ -385,3 +385,73 @@ async def gsheets_save(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Таблица подключена. Новые сдачи будут дублироваться туда.",
                          reply_markup=admin_menu())
+
+
+# ─── ВИДЕО-ИНСТРУКЦИЯ ───────────────────────────────────────────
+
+@router.message(F.text == "🎬 Видео-инструкция")
+async def intro_video_menu(message: Message, state: FSMContext):
+    await state.clear()
+    current = await crud.get_setting("intro_video")
+    status = "✅ загружена" if current else "❌ не загружена"
+    await state.set_state(AdminStates.intro_video_wait)
+    await message.answer(
+        f"🎬 Видео-инструкция для новых учеников: {status}\n\n"
+        "Пришли видео (или видео-сообщение) — оно будет показываться каждому новому ученику. "
+        "Под видео ученик жмёт «✅ Я посмотрел(а)» и только потом получает доступ.\n\n"
+        "Чтобы убрать инструкцию — напиши «удалить».")
+
+
+@router.message(AdminStates.intro_video_wait, F.video)
+async def intro_video_save(message: Message, state: FSMContext):
+    await crud.set_setting("intro_video", message.video.file_id)
+    await state.clear()
+    await message.answer("✅ Видео-инструкция сохранена. Новые ученики увидят её при входе.",
+                         reply_markup=admin_menu())
+
+
+@router.message(AdminStates.intro_video_wait, F.video_note)
+async def intro_video_note_save(message: Message, state: FSMContext):
+    # video_note показать с кнопкой нельзя так же удобно — попросим обычное видео
+    await message.answer("⚠️ Пришли, пожалуйста, обычное видео (не кружок) — "
+                         "чтобы под ним была кнопка «Я посмотрел».")
+
+
+@router.message(AdminStates.intro_video_wait, F.text)
+async def intro_video_text(message: Message, state: FSMContext):
+    if message.text.strip().lower() == "удалить":
+        await crud.set_setting("intro_video", "")
+        await state.clear()
+        await message.answer("✅ Видео-инструкция убрана. Ученики получают доступ сразу.",
+                             reply_markup=admin_menu())
+    else:
+        await message.answer("Пришли видео-файл 👇 или напиши «удалить».")
+
+
+# ─── РАССЫЛКА ВСЕМ ──────────────────────────────────────────────
+
+@router.message(F.text == "📢 Рассылка всем")
+async def admin_broadcast_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(AdminStates.broadcast)
+    await message.answer(
+        "📢 Напиши текст — отправлю всем ученикам системы, которые запускали бота.\n"
+        "Или /cancel чтобы отменить.")
+
+
+@router.message(AdminStates.broadcast, F.text)
+async def admin_broadcast_do(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    text = message.text
+    targets = await crud.broadcast_targets(curator_id=None)
+    if not targets:
+        await message.answer("Пока некому отправлять — ученики ещё не запускали бота.")
+        return
+    sent = 0
+    for uid in targets:
+        try:
+            await bot.send_message(uid, f"📢 Объявление:\n\n{text}")
+            sent += 1
+        except Exception:
+            pass
+    await message.answer(f"✅ Отправлено: {sent} из {len(targets)} учеников.")
