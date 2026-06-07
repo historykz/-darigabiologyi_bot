@@ -11,6 +11,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="👨‍🏫 Кураторы"), KeyboardButton(text="📚 Рабочие тетради")],
             [KeyboardButton(text="👥 Все ученики"), KeyboardButton(text="📊 Все отчёты")],
+            [KeyboardButton(text="🎬 Видео-инструкция"), KeyboardButton(text="📢 Рассылка всем")],
             [KeyboardButton(text="💾 Резервная копия"), KeyboardButton(text="📊 Google Sheets")],
         ],
         resize_keyboard=True,
