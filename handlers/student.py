@@ -22,11 +22,42 @@ router.message.filter(RoleFilter("student"))
 router.callback_query.filter(RoleFilter("student"))
 
 
+# ─── ВИДЕО-ИНСТРУКЦИЯ (онбординг) ───────────────────────────────
+
+async def _intro_ok(event) -> bool:
+    """True, если ученику можно пользоваться ботом (видео просмотрено или его нет)."""
+    video = await crud.get_setting("intro_video")
+    if not video:
+        return True
+    st = await crud.get_student_by_tg(event.from_user.id)
+    if st and st.intro_watched:
+        return True
+    # требуем просмотр — повторно шлём инструкцию
+    if st:
+        await notifications.send_student_welcome(event.bot, st)
+    msg = event if isinstance(event, Message) else event.message
+    await msg.answer("📺 Сначала посмотри видео-инструкцию выше и нажми «✅ Я посмотрел(а)».")
+    return False
+
+
+@router.callback_query(F.data == "intro_done")
+async def intro_done(call: CallbackQuery):
+    await call.answer("Готово!")
+    await crud.set_intro_watched(call.from_user.id)
+    await call.message.answer(
+        "✅ Отлично! Теперь можешь пользоваться ботом:\n"
+        "📚 смотреть рабочие тетради и 📤 сдавать РТ.",
+        reply_markup=student_menu(),
+    )
+
+
 # ─── РАБОЧИЕ ТЕТРАДИ ────────────────────────────────────────────
 
 @router.message(F.text == "📚 Рабочие тетради")
 async def list_workbooks(message: Message, state: FSMContext):
     await state.clear()
+    if not await _intro_ok(message):
+        return
     wbs = await crud.get_workbooks()
     if not wbs:
         await message.answer("📚 Пока нет загруженных рабочих тетрадей.")
@@ -54,6 +85,8 @@ async def send_workbook_btn(call: CallbackQuery):
 @router.message(F.text == "📤 Сдать РТ")
 async def submit_start(message: Message, state: FSMContext):
     await state.clear()
+    if not await _intro_ok(message):
+        return
     await state.set_state(StudentStates.submit_name)
     await message.answer(
         "📤 Сдача рабочей тетради\n\n"
@@ -230,6 +263,8 @@ async def _check_late(curator_id: int) -> tuple[bool, int]:
 
 @router.message(F.text == "📁 Мои работы")
 async def my_works(message: Message, state: FSMContext):
+    if not await _intro_ok(message):
+        return
     student = await crud.get_student_by_tg(message.from_user.id)
     subs = await crud.get_submissions(student_id=student.id)
     if not subs:
