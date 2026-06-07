@@ -38,3 +38,14 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text(
                 "ALTER TABLE groups ADD COLUMN is_active BOOLEAN DEFAULT TRUE"
             ))
+
+    if "students" in tables:
+        cols = {c["name"] for c in insp.get_columns("students")}
+        if "intro_watched" not in cols:
+            sync_conn.execute(text(
+                "ALTER TABLE students ADD COLUMN intro_watched BOOLEAN DEFAULT FALSE"
+            ))
+        if "welcomed" not in cols:
+            sync_conn.execute(text(
+                "ALTER TABLE students ADD COLUMN welcomed BOOLEAN DEFAULT FALSE"
+            ))
