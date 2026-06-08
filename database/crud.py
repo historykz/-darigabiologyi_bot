@@ -7,6 +7,7 @@ from sqlalchemy import func, select, update
 from database.models import (
     Deadline,
     Group,
+    Section,
     Setting,
     Student,
     Submission,
@@ -311,11 +312,12 @@ async def get_workbook_by_serial(serial: int) -> Workbook | None:
 # ─── СДАЧИ ──────────────────────────────────────────────────────
 
 async def add_submission(student_id: int, pdf_file_id: str, submitted_name: str,
-                         curator_id: int, is_late: bool = False,
-                         late_by_minutes: int = 0) -> Submission:
+                         curator_id: int, section_id: int | None = None, week: int = 0,
+                         is_late: bool = False, late_by_minutes: int = 0) -> Submission:
     async with async_session() as s:
         sub = Submission(student_id=student_id, pdf_file_id=pdf_file_id,
                          submitted_name=submitted_name, curator_id=curator_id,
+                         section_id=section_id, week=week,
                          is_late=is_late, late_by_minutes=late_by_minutes)
         s.add(sub)
         await s.commit()
@@ -325,19 +327,79 @@ async def add_submission(student_id: int, pdf_file_id: str, submitted_name: str,
 
 async def get_submissions(student_id: int | None = None,
                           curator_id: int | None = None,
-                          group_id: int | None = None) -> list[Submission]:
+                          group_id: int | None = None,
+                          section_id: int | None = None,
+                          week: int | None = None) -> list[Submission]:
     async with async_session() as s:
         q = select(Submission).where(Submission.deleted_at.is_(None))
         if student_id is not None:
             q = q.where(Submission.student_id == student_id)
         if curator_id is not None:
-            # личный список куратора — скрытые им записи не показываем
             q = q.where(Submission.curator_id == curator_id,
                         Submission.hidden_for_curator == False)  # noqa: E712
         if group_id is not None:
             sub_ids = select(Student.id).where(Student.group_id == group_id)
             q = q.where(Submission.student_id.in_(sub_ids))
+        if section_id is not None:
+            q = q.where(Submission.section_id == section_id)
+        if week is not None:
+            q = q.where(Submission.week == week)
         return list((await s.scalars(q.order_by(Submission.submitted_at_utc.desc()))).all())
+
+
+# ─── РАЗДЕЛЫ (предметы) ─────────────────────────────────────────
+
+async def create_section(group_id: int, curator_id: int, name: str, weeks: int) -> Section:
+    async with async_session() as s:
+        sec = Section(group_id=group_id, curator_id=curator_id, name=name, weeks=weeks)
+        s.add(sec)
+        await s.commit()
+        await s.refresh(sec)
+        return sec
+
+
+async def get_sections(group_id: int, active_only: bool = False) -> list[Section]:
+    async with async_session() as s:
+        q = select(Section).where(Section.group_id == group_id)
+        if active_only:
+            q = q.where(Section.is_active == True)  # noqa: E712
+        return list((await s.scalars(q.order_by(Section.created_at))).all())
+
+
+async def get_section(section_id: int) -> Section | None:
+    async with async_session() as s:
+        return await s.get(Section, section_id)
+
+
+async def close_section(section_id: int) -> None:
+    async with async_session() as s:
+        await s.execute(update(Section).where(Section.id == section_id).values(is_active=False))
+        await s.commit()
+
+
+async def sections_pending_end_notice() -> list[Section]:
+    """Активные разделы, у которых запланированные недели уже прошли, а уведомления не было."""
+    from datetime import datetime, timezone, timedelta
+    async with async_session() as s:
+        secs = list((await s.scalars(
+            select(Section).where(Section.is_active == True,  # noqa: E712
+                                  Section.ended_notified == False))).all())  # noqa: E712
+    now = datetime.now(timezone.utc)
+    due = []
+    for sec in secs:
+        created = sec.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created + timedelta(days=7 * sec.weeks) <= now:
+            due.append(sec)
+    return due
+
+
+async def mark_section_notified(section_id: int) -> None:
+    async with async_session() as s:
+        await s.execute(update(Section).where(Section.id == section_id)
+                        .values(ended_notified=True))
+        await s.commit()
 
 
 async def soft_delete_submission(sub_id: int, by: int) -> None:
