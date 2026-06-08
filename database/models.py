@@ -74,12 +74,28 @@ class Workbook(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Section(Base):
+    """Раздел (предмет) внутри группы: Анатомия, Ботаника… с числом недель."""
+    __tablename__ = "sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    curator_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    weeks: Mapped[int] = mapped_column(Integer, default=4)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    ended_notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Submission(Base):
     __tablename__ = "submissions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id"), index=True)
     type: Mapped[str] = mapped_column(String(32), default="workbook")
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id"), nullable=True, index=True)
+    week: Mapped[int] = mapped_column(Integer, default=0)
     pdf_file_id: Mapped[str] = mapped_column(Text)
     submitted_name: Mapped[str] = mapped_column(String(256))
     submitted_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
