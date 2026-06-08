@@ -33,6 +33,10 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text(
                 "ALTER TABLE submissions ADD COLUMN hidden_for_curator BOOLEAN DEFAULT FALSE"
             ))
+        if "section_id" not in cols:
+            sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN section_id INTEGER"))
+        if "week" not in cols:
+            sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN week INTEGER DEFAULT 0"))
 
     if "groups" in tables:
         cols = {c["name"] for c in insp.get_columns("groups")}
