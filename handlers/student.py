@@ -107,15 +107,45 @@ async def _begin_submit(uid: int, target, state: FSMContext):
     if not student:
         await target.answer("❌ Не нашёл тебя в системе. Обратись к куратору.")
         return
+    sections = await crud.get_sections(student.group_id, active_only=True)
+    if not sections:
+        await target.answer(
+            "📭 Куратор ещё не открыл раздел для сдачи.\n"
+            "Как только он создаст раздел (например «Анатомия»), ты сможешь сдавать РТ.")
+        return
     realname = f"{student.first_name} {student.last_name}".strip()
     await state.update_data(realname=realname, photos=[])
+
+    if len(sections) == 1:
+        await state.update_data(section_id=sections[0].id)
+        await _ask_name(target, state, sections[0])
+    else:
+        rows = [[InlineKeyboardButton(text=f"📚 {s.name}", callback_data=f"sub_sec:{s.id}")]
+                for s in sections]
+        await state.set_state(StudentStates.submit_pick_section)
+        await target.answer("📤 <b>Сдача РТ</b>\n\nВыбери предмет (раздел) 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(StudentStates.submit_pick_section, F.data.startswith("sub_sec:"))
+async def submit_pick_section(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    sec = await crud.get_section(sid)
+    if not sec:
+        await call.message.answer("❌ Раздел не найден.")
+        return
+    await state.update_data(section_id=sid)
+    await _ask_name(call.message, state, sec)
+
+
+async def _ask_name(target, state: FSMContext, section):
     await state.set_state(StudentStates.submit_name)
     await target.answer(
-        "📤 <b>Сдача рабочей тетради</b>\n\n"
-        "Сейчас отправь фото работы — бот соберёт их в один PDF и отправит куратору.\n\n"
-        "────────────────\n"
-        "<b>Шаг 1 из 3 — Введи название файла</b>\n\n"
-        "Как назвать работу? Например: <b>РТ №3</b> или <b>Конспект урок 5</b>.\n"
+        f"📚 Раздел: <b>{html.escape(section.name)}</b>\n\n"
+        "<b>Шаг 1 — Введи название файла</b>\n"
+        "Например: <b>РТ №3</b> или <b>Конспект урок 5</b>.\n"
         "Под этим именем PDF сохранится и придёт куратору 👇",
         parse_mode="HTML",
     )
@@ -125,17 +155,42 @@ async def _begin_submit(uid: int, target, state: FSMContext):
 async def submit_name(message: Message, state: FSMContext):
     fname = message.text.strip()
     await state.update_data(fname=fname)
-    await state.set_state(StudentStates.submit_photos)
+    data = await state.get_data()
+    sec = await crud.get_section(data.get("section_id"))
+    if not sec:
+        await message.answer("❌ Раздел не найден, начни заново.")
+        await state.clear()
+        return
+    rows = []
+    row = []
+    for w in range(1, sec.weeks + 1):
+        row.append(InlineKeyboardButton(text=f"Неделя {w}", callback_data=f"sub_wk:{w}"))
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    await state.set_state(StudentStates.submit_pick_week)
     await message.answer(f"✅ Название принято: <b>{html.escape(fname)}</b>", parse_mode="HTML")
     await message.answer(
+        f"<b>Шаг 2 — За какую неделю раздела «{html.escape(sec.name)}»?</b>\n"
+        "Выбери неделю 👇",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(StudentStates.submit_pick_week, F.data.startswith("sub_wk:"))
+async def submit_pick_week(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    week = int(call.data.split(":")[1])
+    await state.update_data(week=week, photos=[])
+    await state.set_state(StudentStates.submit_photos)
+    await call.message.answer(
+        f"✅ Неделя {week}\n\n"
         "────────────────\n"
-        "Шаг 2 из 3 — Отправь фото\n\n"
-        "📸 Фотографируй страницы и отправляй по одному.\n"
-        "Можно сразу по 10–20 фото — бот сохранит все по порядку.\n\n"
-        "Советы для качества:\n"
-        "• Хорошее освещение — не в темноте\n"
-        "• Держи телефон ровно над листом\n"
-        "• Весь текст должен быть виден и читаем\n\n"
+        "Шаг 3 — Отправь фото\n\n"
+        "📸 Фотографируй страницы и отправляй по одному. Можно сразу по 10–20 фото.\n\n"
+        "• Хорошее освещение\n• Телефон ровно над листом\n• Текст читаем\n\n"
         "Когда все страницы отправлены — нажми «📄 Отправить в PDF»."
     )
 
@@ -208,12 +263,17 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     student = await crud.get_student_by_tg(call.from_user.id)
     group = await crud.get_group(student.group_id)
     realname = f"{student.first_name} {student.last_name}".strip()
+    section_id = data.get("section_id")
+    week = int(data.get("week") or 0)
+    section = await crud.get_section(section_id) if section_id else None
+    sec_name = section.name if section else "—"
 
     # дедлайн-контроль
     is_late, late_min = await _check_late(student.curator_id)
 
-    # имя PDF — то, что ввёл ученик (убираем лишь недопустимые в имени файла символы)
-    safe = re.sub(r'[\\/:*?"<>|\n\r\t]', "", file_label).strip().replace(" ", "_")
+    # имя PDF — раздел + неделя + название (убираем недопустимые символы)
+    raw_name = f"{sec_name}_неделя{week}_{file_label}" if section else file_label
+    safe = re.sub(r'[\\/:*?"<>|\n\r\t]', "", raw_name).strip().replace(" ", "_")
     pdf_name = (safe or "Работа") + ".pdf"
 
     sent = await bot.send_document(
@@ -222,10 +282,10 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     )
     pdf_file_id = sent.document.file_id
 
-    # submitted_name = введённое название файла (имя/фамилия берём из системы)
     sub = await crud.add_submission(
         student_id=student.id, pdf_file_id=pdf_file_id, submitted_name=file_label,
-        curator_id=student.curator_id, is_late=is_late, late_by_minutes=late_min,
+        curator_id=student.curator_id, section_id=section_id, week=week,
+        is_late=is_late, late_by_minutes=late_min,
     )
 
     if is_late:
@@ -238,6 +298,7 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
         await call.message.answer(
             "🎉 <b>Рабочая тетрадь сдана!</b>\n\n"
             f"👤 {html.escape(realname)}\n"
+            f"📚 Раздел: <b>{html.escape(sec_name)}</b> · Неделя {week}\n"
             f"📄 Файл: <b>{html.escape(file_label)}</b>\n"
             f"Страниц: {len(photos)}\n"
             "📨 PDF отправлен куратору\n\n"
