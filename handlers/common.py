@@ -1,6 +1,6 @@
-"""Общие хэндлеры: /start, определение роли, fallback."""
-from aiogram import F, Router
-from aiogram.filters import Command
+"""Общие хэндлеры: /start, регистрация по ссылке, определение роли, fallback."""
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -9,14 +9,16 @@ from keyboards.admin_kb import admin_menu
 from keyboards.curator_kb import curator_menu
 from keyboards.student_kb import student_menu
 from services import notifications, roles
+from states.fsm_states import JoinStates
 
 router = Router()
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
     tg = message.from_user
+    payload = (command.args or "").strip()
 
     # активация отложенного назначения куратора по @username
     if tg.username:
@@ -31,6 +33,77 @@ async def cmd_start(message: Message, state: FSMContext):
 
     role = await roles.get_role(tg.id)
 
+    # ── РЕГИСТРАЦИЯ ПО ССЫЛКЕ ─────────────────────────────────────
+    # payload — случайный код группы. Доступно тем, кто ещё не ученик/куратор/админ.
+    if payload and role not in ("admin", "curator"):
+        group = await crud.get_group_by_token(payload)
+        # запасной вариант для старых ссылок вида g5
+        if group is None and payload.startswith("g") and payload[1:].isdigit():
+            group = await crud.get_group(int(payload[1:]))
+        if group is None or not group.is_active:
+            await message.answer("❌ Ссылка недействительна. Обратись к своему куратору.")
+            return
+        gid = group.id
+        existing = await crud.get_student_by_tg(tg.id)
+        if existing and existing.group_id == gid:
+            await message.answer(f"Ты уже в группе «{group.name}». Пользуйся меню 👇",
+                                 reply_markup=student_menu())
+            return
+        curator = await crud.get_user_by_tg(group.curator_id)
+        cur_name = (curator.first_name if curator and curator.first_name else "куратор")
+        await state.set_state(JoinStates.name)
+        await state.update_data(gid=gid)
+        await message.answer(
+            f"👋 Привет! Ты вступаешь в группу «{group.name}» у куратора {cur_name}.\n\n"
+            "✍️ Введи своё имя и фамилию — они будут в системе.\n"
+            "📝 Пример: Алмас Берков"
+        )
+        return
+
+    await _greet(message, role, state)
+
+
+@router.message(JoinStates.name, F.text)
+async def join_enter_name(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    gid = data.get("gid")
+    await state.clear()
+    group = await crud.get_group(gid)
+    if not group or not group.is_active:
+        await message.answer("❌ Ссылка недействительна. Обратись к куратору.")
+        return
+    tg = message.from_user
+    parts = message.text.strip().split(maxsplit=1)
+    first = parts[0]
+    last = parts[1] if len(parts) > 1 else ""
+
+    await crud.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name)
+    st = await crud.add_student(first_name=first, last_name=last, username=tg.username,
+                                user_id=tg.id, group_id=gid, curator_id=group.curator_id)
+
+    await message.answer(
+        f"🎉 Отлично, {first}! Ты почти на финише — тебя записали в группу «{group.name}».")
+
+    video = await crud.get_setting("intro_video")
+    if video:
+        await notifications.send_student_welcome(bot, st)
+    else:
+        await crud.set_intro_watched(tg.id)
+        await message.answer(
+            "Теперь можешь пользоваться ботом: 📚 рабочие тетради и 📤 сдавать РТ.",
+            reply_markup=student_menu())
+
+    # уведомим куратора о новом ученике
+    try:
+        await bot.send_message(
+            group.curator_id,
+            f"➕ Новый ученик записался по ссылке: {first} {last} → группа «{group.name}».")
+    except Exception:
+        pass
+
+
+async def _greet(message: Message, role: str, state: FSMContext):
+    tg = message.from_user
     if role == "admin":
         # гарантируем запись админа в users
         await crud.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name, role="admin")
@@ -88,8 +161,9 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
+    role = await roles.get_role(message.from_user.id)
     await message.answer("Окей, прервал текущее действие. Воспользуйся меню 👇")
-    await cmd_start(message, state)
+    await _greet(message, role, state)
 
 
 @router.message()
