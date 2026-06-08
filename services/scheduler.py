@@ -39,11 +39,20 @@ async def _non_submitters(curator_id: int, deadline_local: datetime):
 
 async def _check_reminders(bot: Bot) -> None:
     now = datetime.now(TZ)
-    key_min = now.strftime("%Y-%m-%d %H:%M")
+    day_key = now.strftime("%Y-%m-%d")
+
+    # не даём множеству меток расти бесконечно
+    if len(_sent) > 20000:
+        _sent.clear()
 
     submit_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📤 Сдать РТ", callback_data="student_submit")
     ]])
+
+    def due(t: datetime) -> bool:
+        # сработать, если момент наступил в последние ~2 минуты (устойчиво к дрейфу)
+        delta = (now - t).total_seconds()
+        return 0 <= delta < 120
 
     for dl in await crud.all_deadlines():
         if not dl.reminders_enabled:
@@ -68,9 +77,9 @@ async def _check_reminders(bot: Bot) -> None:
         }
 
         for tag, t in offsets.items():
-            if t.strftime("%Y-%m-%d %H:%M") != key_min:
+            if not due(t):
                 continue
-            mark = f"{dl.curator_id}:{tag}:{key_min}"
+            mark = f"{dl.curator_id}:{tag}:{day_key}"  # один раз за этот дедлайн
             if mark in _sent:
                 continue
             _sent.add(mark)
@@ -95,16 +104,15 @@ async def _check_reminders(bot: Bot) -> None:
                         await bot.send_message(
                             st.user_id,
                             "🌟 Молодец, ты уже сдал(а) рабочую тетрадь на этой неделе!\n"
-                            "Заодно проверь, что отправил(а) все домашние задания куратору. "
+                            "Не забудь отправить все домашние задания куратору до дедлайна. "
                             "Хорошего дня! 😊",
                         )
                     except Exception:
                         pass
 
         # итоговый отчёт куратору через 2 минуты после дедлайна
-        report_t = deadline_local + timedelta(minutes=2)
-        if report_t.strftime("%Y-%m-%d %H:%M") == key_min:
-            mark = f"report:{dl.curator_id}:{key_min}"
+        if due(deadline_local + timedelta(minutes=2)):
+            mark = f"report:{dl.curator_id}:{day_key}"
             if mark not in _sent:
                 _sent.add(mark)
                 await _send_report(bot, dl.curator_id, deadline_local)
