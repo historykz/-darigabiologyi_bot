@@ -1,4 +1,6 @@
 """Хэндлеры ученика: рабочие тетради, сдача РТ, мои работы."""
+import html
+import re
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
@@ -24,19 +26,20 @@ router.callback_query.filter(RoleFilter("student"))
 
 # ─── ВИДЕО-ИНСТРУКЦИЯ (онбординг) ───────────────────────────────
 
-async def _intro_ok(event) -> bool:
-    """True, если ученику можно пользоваться ботом (видео просмотрено или его нет)."""
+async def _intro_ok(uid: int, target) -> bool:
+    """True, если ученику можно пользоваться ботом (видео просмотрено или его нет).
+
+    uid — telegram_id ученика, target — объект с .answer()/.bot для ответа.
+    """
     video = await crud.get_setting("intro_video")
     if not video:
         return True
-    st = await crud.get_student_by_tg(event.from_user.id)
+    st = await crud.get_student_by_tg(uid)
     if st and st.intro_watched:
         return True
-    # требуем просмотр — повторно шлём инструкцию
     if st:
-        await notifications.send_student_welcome(event.bot, st)
-    msg = event if isinstance(event, Message) else event.message
-    await msg.answer("📺 Сначала посмотри видео-инструкцию выше и нажми «✅ Я посмотрел(а)».")
+        await notifications.send_student_welcome(target.bot, st)
+    await target.answer("📺 Сначала посмотри видео-инструкцию выше и нажми «✅ Я посмотрел(а)».")
     return False
 
 
@@ -56,7 +59,7 @@ async def intro_done(call: CallbackQuery):
 @router.message(F.text == "📚 Рабочие тетради")
 async def list_workbooks(message: Message, state: FSMContext):
     await state.clear()
-    if not await _intro_ok(message):
+    if not await _intro_ok(message.from_user.id, message):
         return
     wbs = await crud.get_workbooks()
     if not wbs:
@@ -85,44 +88,55 @@ async def send_workbook_btn(call: CallbackQuery):
 @router.message(F.text == "📤 Сдать РТ")
 async def submit_start(message: Message, state: FSMContext):
     await state.clear()
-    if not await _intro_ok(message):
+    if not await _intro_ok(message.from_user.id, message):
         return
-    await state.set_state(StudentStates.submit_name)
-    await message.answer(
-        "📤 Сдача рабочей тетради\n\n"
-        "Сейчас вы отправите фото выполненной работы, бот соберёт их "
-        "в один PDF и отправит вашему куратору.\n\n"
-        "────────────────\n"
-        "Шаг 1 из 3 — Введите ФИО\n\n"
-        "Напишите своё полное ФИО — оно будет указано в PDF.\n\n"
-        "📝 Пример: Иванов Иван Иванович\n\n"
-        "❗ Введите имя точно как в журнале — куратор будет искать работу по нему."
-    )
+    await _begin_submit(message.from_user.id, message, state)
 
 
 @router.callback_query(F.data == "student_submit")
 async def submit_start_cb(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    await submit_start(call.message, state)
+    await state.clear()
+    if not await _intro_ok(call.from_user.id, call.message):
+        return
+    await _begin_submit(call.from_user.id, call.message, state)
+
+
+async def _begin_submit(uid: int, target, state: FSMContext):
+    student = await crud.get_student_by_tg(uid)
+    if not student:
+        await target.answer("❌ Не нашёл тебя в системе. Обратись к куратору.")
+        return
+    realname = f"{student.first_name} {student.last_name}".strip()
+    await state.update_data(realname=realname, photos=[])
+    await state.set_state(StudentStates.submit_name)
+    await target.answer(
+        "📤 <b>Сдача рабочей тетради</b>\n\n"
+        "Сейчас отправь фото работы — бот соберёт их в один PDF и отправит куратору.\n\n"
+        "────────────────\n"
+        "<b>Шаг 1 из 3 — Введи название файла</b>\n\n"
+        "Как назвать работу? Например: <b>РТ №3</b> или <b>Конспект урок 5</b>.\n"
+        "Под этим именем PDF сохранится и придёт куратору 👇",
+        parse_mode="HTML",
+    )
 
 
 @router.message(StudentStates.submit_name, F.text)
 async def submit_name(message: Message, state: FSMContext):
-    name = message.text.strip()
-    await state.update_data(name=name, photos=[])
+    fname = message.text.strip()
+    await state.update_data(fname=fname)
     await state.set_state(StudentStates.submit_photos)
-    await message.answer(f"✅ ФИО принято: {name}")
+    await message.answer(f"✅ Название принято: <b>{html.escape(fname)}</b>", parse_mode="HTML")
     await message.answer(
         "────────────────\n"
-        "Шаг 2 из 3 — Отправьте фото\n\n"
-        "📸 Фотографируйте страницы и отправляйте по одному.\n"
-        "Можно отправлять сразу по 10–20 фото — бот сохранит все по порядку.\n\n"
-        "Советы для хорошего качества:\n"
+        "Шаг 2 из 3 — Отправь фото\n\n"
+        "📸 Фотографируй страницы и отправляй по одному.\n"
+        "Можно сразу по 10–20 фото — бот сохранит все по порядку.\n\n"
+        "Советы для качества:\n"
         "• Хорошее освещение — не в темноте\n"
-        "• Держите телефон ровно над листом\n"
+        "• Держи телефон ровно над листом\n"
         "• Весь текст должен быть виден и читаем\n\n"
-        "После каждого фото бот покажет счётчик.\n"
-        "Когда все страницы отправлены — нажмите «📄 Отправить в PDF»."
+        "Когда все страницы отправлены — нажми «📄 Отправить в PDF»."
     )
 
 
@@ -165,7 +179,7 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
-    name: str = data.get("name", "")
+    file_label: str = (data.get("fname") or "Работа").strip()
     if not photos:
         await call.message.answer("📸 Сначала пришли хотя бы одно фото.")
         return
@@ -193,20 +207,24 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
 
     student = await crud.get_student_by_tg(call.from_user.id)
     group = await crud.get_group(student.group_id)
+    realname = f"{student.first_name} {student.last_name}".strip()
 
     # дедлайн-контроль
     is_late, late_min = await _check_late(student.curator_id)
 
-    fname = f"РТ_{name.replace(' ', '_')}.pdf"
-    # отправляем сам PDF ученику как файл, чтобы получить надёжный file_id
+    # имя PDF — то, что ввёл ученик (убираем лишь недопустимые в имени файла символы)
+    safe = re.sub(r'[\\/:*?"<>|\n\r\t]', "", file_label).strip().replace(" ", "_")
+    pdf_name = (safe or "Работа") + ".pdf"
+
     sent = await bot.send_document(
-        call.from_user.id, BufferedInputFile(pdf_bytes, fname),
-        caption="📄 Ваша работа собрана в PDF и отправлена куратору."
+        call.from_user.id, BufferedInputFile(pdf_bytes, pdf_name),
+        caption="📄 Твоя работа собрана в PDF и отправлена куратору."
     )
     pdf_file_id = sent.document.file_id
 
+    # submitted_name = введённое название файла (имя/фамилия берём из системы)
     sub = await crud.add_submission(
-        student_id=student.id, pdf_file_id=pdf_file_id, submitted_name=name,
+        student_id=student.id, pdf_file_id=pdf_file_id, submitted_name=file_label,
         curator_id=student.curator_id, is_late=is_late, late_by_minutes=late_min,
     )
 
@@ -218,19 +236,21 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
         )
     else:
         await call.message.answer(
-            "🎉 Рабочая тетрадь успешно сдана!\n\n"
-            f"👤 ФИО: {name}\n"
-            f"📄 Страниц: {len(photos)}\n"
+            "🎉 <b>Рабочая тетрадь сдана!</b>\n\n"
+            f"👤 {html.escape(realname)}\n"
+            f"📄 Файл: <b>{html.escape(file_label)}</b>\n"
+            f"Страниц: {len(photos)}\n"
             "📨 PDF отправлен куратору\n\n"
             "────────────────\n"
-            "Куратор получил вашу работу и проверит её.",
+            "Куратор получил твою работу и проверит её.",
+            parse_mode="HTML",
             reply_markup=student_menu(),
         )
 
     # уведомление куратору + Google Sheets
     await notifications.notify_submission(bot, sub.id)
     status = f"просрочено +{late_min} мин" if is_late else "вовремя"
-    await sheets.append_submission(name, group.name if group else "—",
+    await sheets.append_submission(realname, group.name if group else "—",
                                    roles.fmt_absolute(sub.submitted_at_utc), status)
 
     await state.clear()
@@ -263,7 +283,7 @@ async def _check_late(curator_id: int) -> tuple[bool, int]:
 
 @router.message(F.text == "📁 Мои работы")
 async def my_works(message: Message, state: FSMContext):
-    if not await _intro_ok(message):
+    if not await _intro_ok(message.from_user.id, message):
         return
     student = await crud.get_student_by_tg(message.from_user.id)
     subs = await crud.get_submissions(student_id=student.id)
