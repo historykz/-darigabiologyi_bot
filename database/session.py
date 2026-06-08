@@ -1,4 +1,6 @@
 """Асинхронная сессия БД."""
+import secrets
+
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -38,6 +40,17 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text(
                 "ALTER TABLE groups ADD COLUMN is_active BOOLEAN DEFAULT TRUE"
             ))
+        if "token" not in cols:
+            sync_conn.execute(text("ALTER TABLE groups ADD COLUMN token VARCHAR(32)"))
+        # выдаём случайный код группам, у которых его ещё нет
+        rows = sync_conn.execute(
+            text("SELECT id FROM groups WHERE token IS NULL OR token = ''")
+        ).fetchall()
+        for (gid,) in rows:
+            sync_conn.execute(
+                text("UPDATE groups SET token = :t WHERE id = :id"),
+                {"t": secrets.token_urlsafe(8), "id": gid},
+            )
 
     if "students" in tables:
         cols = {c["name"] for c in insp.get_columns("students")}
