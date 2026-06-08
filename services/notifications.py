@@ -15,12 +15,14 @@ async def notify_submission(bot: Bot, sub_id: int) -> None:
     student = await crud.get_student(sub.student_id)
     group = await crud.get_group(student.group_id) if student else None
     group_name = group.name if group else "—"
+    realname = f"{student.first_name} {student.last_name}".strip() if student else sub.submitted_name
 
     when = roles.fmt_relative(sub.submitted_at_utc)
     if sub.is_late:
         text = (
             "📤 Новая рабочая тетрадь! ⚠️\n"
-            f"   Ученик: {sub.submitted_name}\n"
+            f"   Ученик: {realname}\n"
+            f"   Файл: {sub.submitted_name}\n"
             f"   Группа: {group_name}\n"
             f"   Время: {roles.fmt_absolute(sub.submitted_at_utc)} ({when})\n"
             f"   Просрочено: +{sub.late_by_minutes} мин"
@@ -28,7 +30,8 @@ async def notify_submission(bot: Bot, sub_id: int) -> None:
     else:
         text = (
             "📤 Новая рабочая тетрадь!\n"
-            f"   Ученик: {sub.submitted_name}\n"
+            f"   Ученик: {realname}\n"
+            f"   Файл: {sub.submitted_name}\n"
             f"   Группа: {group_name}\n"
             f"   Время: {roles.fmt_absolute(sub.submitted_at_utc)} ({when})"
         )
