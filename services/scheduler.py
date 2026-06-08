@@ -179,10 +179,28 @@ async def _auto_backup(bot: Bot) -> None:
         pass
 
 
+async def _section_end_notices(bot: Bot) -> None:
+    """Сообщает кураторам, что запланированные недели раздела прошли — пора создать новый."""
+    for sec in await crud.sections_pending_end_notice():
+        g = await crud.get_group(sec.group_id)
+        try:
+            await bot.send_message(
+                sec.curator_id,
+                f"📚 Раздел «{sec.name}» (группа «{g.name if g else '—'}») — "
+                f"{sec.weeks} недель прошли.\n"
+                "Можно создать новый раздел: «📥 Кто сдал» → выбери группу → «➕ Добавить раздел».\n"
+                "Старые сдачи никуда не денутся — они сохранены в этом разделе.")
+        except Exception:
+            pass
+        await crud.mark_section_notified(sec.id)
+
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone=TZ)
     # проверка напоминаний/отчётов каждую минуту
     sched.add_job(_check_reminders, "interval", minutes=1, args=[bot])
+    # напоминание о завершении разделов — раз в час
+    sched.add_job(_section_end_notices, "interval", hours=1, args=[bot])
     # автобэкап: воскресенье 03:00 по Астане
     sched.add_job(_auto_backup, "cron", day_of_week="sun", hour=3, minute=0, args=[bot])
     return sched
