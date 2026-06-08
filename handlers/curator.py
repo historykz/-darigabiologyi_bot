@@ -530,9 +530,12 @@ async def open_submission(call: CallbackQuery):
     if not sub or sub.curator_id != call.from_user.id:
         await call.message.answer("❌ Файл не найден.")
         return
+    st = await crud.get_student(sub.student_id)
+    realname = f"{st.first_name} {st.last_name}".strip() if st else "—"
     await call.message.answer_document(
         sub.pdf_file_id,
-        caption=f"👤 {sub.submitted_name}\n📤 {roles.fmt_absolute(sub.submitted_at_utc)}"
+        caption=f"👤 {realname}\n📄 Файл: {sub.submitted_name}\n"
+                f"📤 {roles.fmt_absolute(sub.submitted_at_utc)}"
     )
 
 
