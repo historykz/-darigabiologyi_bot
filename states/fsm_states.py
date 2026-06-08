@@ -29,3 +29,7 @@ class StudentStates(StatesGroup):
     submit_name = State()
     submit_photos = State()
     get_workbook = State()
+
+
+class JoinStates(StatesGroup):
+    name = State()
