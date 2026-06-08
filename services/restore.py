@@ -1,5 +1,6 @@
 """Восстановление из JSON-бэкапа (upsert по ключам)."""
 import json
+import secrets
 from datetime import datetime
 
 from sqlalchemy import select
@@ -65,8 +66,11 @@ async def restore(data: dict) -> dict:
             if existing:
                 existing.curator_id = g["curator_id"]
                 existing.name = g["name"]
+                if g.get("token"):
+                    existing.token = g["token"]
             else:
                 s.add(Group(id=g["id"], curator_id=g["curator_id"], name=g["name"],
+                            token=g.get("token") or secrets.token_urlsafe(8),
                             created_at=_dt(g.get("created_at"))))
             counts["groups"] += 1
 
