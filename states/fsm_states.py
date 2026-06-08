@@ -23,10 +23,14 @@ class CuratorStates(StatesGroup):
     get_workbook = State()
     search = State()
     broadcast = State()
+    new_section_name = State()
+    new_section_weeks = State()
 
 
 class StudentStates(StatesGroup):
+    submit_pick_section = State()
     submit_name = State()
+    submit_pick_week = State()
     submit_photos = State()
     get_workbook = State()
 
