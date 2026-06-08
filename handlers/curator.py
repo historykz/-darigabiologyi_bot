@@ -36,15 +36,33 @@ async def my_groups(message: Message, state: FSMContext):
     await state.clear()
     groups = await crud.get_groups(curator_id=message.from_user.id)
     lines = ["📂 Мои группы:"]
+    rows = []
     for i, g in enumerate(groups, start=1):
         n = await crud.count_students(g.id)
         lines.append(f"   {i}. {g.name} — {n} учеников")
+        rows.append([InlineKeyboardButton(
+            text=f"🔗 Ссылка для «{g.name}»", callback_data=f"cur_link:{g.id}")])
     if not groups:
         lines.append("   (пока нет групп)")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="➕ Создать новую группу", callback_data="cur_new_group")
-    ]])
-    await message.answer("\n".join(lines), reply_markup=kb)
+    rows.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="cur_new_group")])
+    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_link:"))
+async def group_link(call: CallbackQuery, bot: Bot):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={g.token}"
+    await call.message.answer(
+        f"🔗 Ссылка для группы «{g.name}»:\n\n{link}\n\n"
+        "Отправь её ученикам этой группы. Они откроют, введут имя и фамилию — "
+        "и сами попадут в группу, увидят видео-инструкцию и смогут сдавать РТ.\n"
+        "Код в ссылке уникальный и случайный — попасть в группу можно только по ней.")
 
 
 @router.callback_query(F.data == "cur_new_group")
