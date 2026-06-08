@@ -1,4 +1,5 @@
 """CRUD-операции. Вся работа с БД проходит здесь."""
+import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
@@ -62,11 +63,25 @@ async def get_curators() -> list[User]:
 
 async def create_group(curator_id: int, name: str) -> Group:
     async with async_session() as s:
-        g = Group(curator_id=curator_id, name=name)
+        g = Group(curator_id=curator_id, name=name, token=secrets.token_urlsafe(8))
         s.add(g)
         await s.commit()
         await s.refresh(g)
-        return g
+    # дефолтный дедлайн (пятница 23:59 Астана = 18:59 UTC), чтобы напоминания работали сразу
+    await ensure_default_deadline(curator_id)
+    return g
+
+
+async def get_group_by_token(token: str) -> Group | None:
+    async with async_session() as s:
+        return (await s.scalars(select(Group).where(Group.token == token))).first()
+
+
+async def ensure_default_deadline(curator_id: int) -> None:
+    existing = await get_deadline(curator_id)
+    if existing is None:
+        await upsert_deadline(curator_id, weekday=4, deadline_time_utc="18:59",
+                              reminders_enabled=True)
 
 
 async def get_groups(curator_id: int | None = None) -> list[Group]:
