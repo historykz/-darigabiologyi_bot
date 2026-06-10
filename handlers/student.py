@@ -90,7 +90,15 @@ async def submit_start(message: Message, state: FSMContext):
     await state.clear()
     if not await _intro_ok(message.from_user.id, message):
         return
-    await _begin_submit(message.from_user.id, message, state)
+    await _begin_submit(message.from_user.id, message, state, "workbook")
+
+
+@router.message(F.text == "📷 Сдать практику")
+async def submit_practice_start(message: Message, state: FSMContext):
+    await state.clear()
+    if not await _intro_ok(message.from_user.id, message):
+        return
+    await _begin_submit(message.from_user.id, message, state, "practice")
 
 
 @router.callback_query(F.data == "student_submit")
@@ -99,10 +107,18 @@ async def submit_start_cb(call: CallbackQuery, state: FSMContext):
     await state.clear()
     if not await _intro_ok(call.from_user.id, call.message):
         return
-    await _begin_submit(call.from_user.id, call.message, state)
+    await _begin_submit(call.from_user.id, call.message, state, "workbook")
 
 
-async def _begin_submit(uid: int, target, state: FSMContext):
+def _type_label(t: str) -> str:
+    return "практику" if t == "practice" else "конспект (РТ)"
+
+
+def _type_emoji(t: str) -> str:
+    return "📷" if t == "practice" else "📄"
+
+
+async def _begin_submit(uid: int, target, state: FSMContext, sub_type: str = "workbook"):
     student = await crud.get_student_by_tg(uid)
     if not student:
         await target.answer("❌ Не нашёл тебя в системе. Обратись к куратору.")
@@ -111,19 +127,20 @@ async def _begin_submit(uid: int, target, state: FSMContext):
     if not sections:
         await target.answer(
             "📭 Куратор ещё не открыл раздел для сдачи.\n"
-            "Как только он создаст раздел (например «Анатомия»), ты сможешь сдавать РТ.")
+            "Как только он создаст раздел (например «Анатомия»), ты сможешь сдавать.")
         return
     realname = f"{student.first_name} {student.last_name}".strip()
-    await state.update_data(realname=realname, photos=[])
+    await state.update_data(realname=realname, photos=[], submit_type=sub_type)
 
+    head = "📷 <b>Сдача практики</b>" if sub_type == "practice" else "📤 <b>Сдача РТ</b>"
     if len(sections) == 1:
         await state.update_data(section_id=sections[0].id)
-        await _ask_name(target, state, sections[0])
+        await _ask_name(target, state, sections[0], sub_type)
     else:
         rows = [[InlineKeyboardButton(text=f"📚 {s.name}", callback_data=f"sub_sec:{s.id}")]
                 for s in sections]
         await state.set_state(StudentStates.submit_pick_section)
-        await target.answer("📤 <b>Сдача РТ</b>\n\nВыбери предмет (раздел) 👇",
+        await target.answer(f"{head}\n\nВыбери предмет (раздел) 👇",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -136,16 +153,17 @@ async def submit_pick_section(call: CallbackQuery, state: FSMContext):
     if not sec:
         await call.message.answer("❌ Раздел не найден.")
         return
+    data = await state.get_data()
     await state.update_data(section_id=sid)
-    await _ask_name(call.message, state, sec)
+    await _ask_name(call.message, state, sec, data.get("submit_type", "workbook"))
 
 
-async def _ask_name(target, state: FSMContext, section):
+async def _ask_name(target, state: FSMContext, section, sub_type: str):
     await state.set_state(StudentStates.submit_name)
     await target.answer(
         f"📚 Раздел: <b>{html.escape(section.name)}</b>\n\n"
-        "<b>Шаг 1 — Введи название файла</b>\n"
-        "Например: <b>РТ №3</b> или <b>Конспект урок 5</b>.\n"
+        f"<b>Шаг 1 — Введи название файла</b> (это {_type_label(sub_type)})\n"
+        "Например: <b>РТ №3</b> или <b>Практика урок 5</b>.\n"
         "Под этим именем PDF сохранится и придёт куратору 👇",
         parse_mode="HTML",
     )
@@ -183,6 +201,22 @@ async def submit_name(message: Message, state: FSMContext):
 async def submit_pick_week(call: CallbackQuery, state: FSMContext):
     await call.answer()
     week = int(call.data.split(":")[1])
+    data = await state.get_data()
+    sub_type = data.get("submit_type", "workbook")
+    section_id = data.get("section_id")
+    student = await crud.get_student_by_tg(call.from_user.id)
+    sec = await crud.get_section(section_id)
+
+    # защита от повторной сдачи
+    if student and await crud.has_submission(student.id, section_id, week, sub_type):
+        await state.clear()
+        what = "практику" if sub_type == "practice" else "конспект"
+        await call.message.answer(
+            f"✅ Ты уже сдал(а) {what} по разделу «{sec.name if sec else '—'}», неделя {week}.\n\n"
+            "Повторно сдать нельзя. Если нужно пересдать — попроси куратора удалить "
+            "прежнюю работу, потом сможешь отправить заново.")
+        return
+
     await state.update_data(week=week, photos=[])
     await state.set_state(StudentStates.submit_photos)
     await call.message.answer(
@@ -265,14 +299,25 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     realname = f"{student.first_name} {student.last_name}".strip()
     section_id = data.get("section_id")
     week = int(data.get("week") or 0)
+    sub_type = data.get("submit_type", "workbook")
     section = await crud.get_section(section_id) if section_id else None
     sec_name = section.name if section else "—"
+
+    # повторная проверка дубля (на случай гонки)
+    if section and await crud.has_submission(student.id, section_id, week, sub_type):
+        await state.clear()
+        what = "практику" if sub_type == "practice" else "конспект"
+        await call.message.answer(
+            f"✅ Ты уже сдал(а) {what} по «{sec_name}», неделя {week}. "
+            "Попроси куратора удалить прежнюю работу для пересдачи.")
+        return
 
     # дедлайн-контроль
     is_late, late_min = await _check_late(student.curator_id)
 
     # имя PDF — раздел + неделя + название (убираем недопустимые символы)
-    raw_name = f"{sec_name}_неделя{week}_{file_label}" if section else file_label
+    kind = "практика" if sub_type == "practice" else "РТ"
+    raw_name = f"{sec_name}_{kind}_неделя{week}_{file_label}" if section else file_label
     safe = re.sub(r'[\\/:*?"<>|\n\r\t]', "", raw_name).strip().replace(" ", "_")
     pdf_name = (safe or "Работа") + ".pdf"
 
@@ -284,10 +329,11 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
 
     sub = await crud.add_submission(
         student_id=student.id, pdf_file_id=pdf_file_id, submitted_name=file_label,
-        curator_id=student.curator_id, section_id=section_id, week=week,
+        curator_id=student.curator_id, section_id=section_id, week=week, sub_type=sub_type,
         is_late=is_late, late_by_minutes=late_min,
     )
 
+    kind_word = "Практика" if sub_type == "practice" else "Рабочая тетрадь"
     if is_late:
         await call.message.answer(
             "⚠️ Работа принята.\n"
@@ -296,7 +342,7 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
         )
     else:
         await call.message.answer(
-            "🎉 <b>Рабочая тетрадь сдана!</b>\n\n"
+            f"🎉 <b>{kind_word} сдана!</b>\n\n"
             f"👤 {html.escape(realname)}\n"
             f"📚 Раздел: <b>{html.escape(sec_name)}</b> · Неделя {week}\n"
             f"📄 Файл: <b>{html.escape(file_label)}</b>\n"
