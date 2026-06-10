@@ -313,11 +313,12 @@ async def get_workbook_by_serial(serial: int) -> Workbook | None:
 
 async def add_submission(student_id: int, pdf_file_id: str, submitted_name: str,
                          curator_id: int, section_id: int | None = None, week: int = 0,
+                         sub_type: str = "workbook",
                          is_late: bool = False, late_by_minutes: int = 0) -> Submission:
     async with async_session() as s:
         sub = Submission(student_id=student_id, pdf_file_id=pdf_file_id,
                          submitted_name=submitted_name, curator_id=curator_id,
-                         section_id=section_id, week=week,
+                         section_id=section_id, week=week, type=sub_type,
                          is_late=is_late, late_by_minutes=late_by_minutes)
         s.add(sub)
         await s.commit()
@@ -329,7 +330,8 @@ async def get_submissions(student_id: int | None = None,
                           curator_id: int | None = None,
                           group_id: int | None = None,
                           section_id: int | None = None,
-                          week: int | None = None) -> list[Submission]:
+                          week: int | None = None,
+                          sub_type: str | None = None) -> list[Submission]:
     async with async_session() as s:
         q = select(Submission).where(Submission.deleted_at.is_(None))
         if student_id is not None:
@@ -344,7 +346,24 @@ async def get_submissions(student_id: int | None = None,
             q = q.where(Submission.section_id == section_id)
         if week is not None:
             q = q.where(Submission.week == week)
+        if sub_type is not None:
+            q = q.where(Submission.type == sub_type)
         return list((await s.scalars(q.order_by(Submission.submitted_at_utc.desc()))).all())
+
+
+async def has_submission(student_id: int, section_id: int, week: int, sub_type: str) -> bool:
+    """Уже есть активная (не удалённая) сдача этого типа за раздел+неделю?"""
+    async with async_session() as s:
+        row = await s.scalar(
+            select(Submission.id).where(
+                Submission.student_id == student_id,
+                Submission.section_id == section_id,
+                Submission.week == week,
+                Submission.type == sub_type,
+                Submission.deleted_at.is_(None),
+            ).limit(1)
+        )
+        return row is not None
 
 
 # ─── РАЗДЕЛЫ (предметы) ─────────────────────────────────────────
@@ -360,7 +379,7 @@ async def create_section(group_id: int, curator_id: int, name: str, weeks: int) 
 
 async def get_sections(group_id: int, active_only: bool = False) -> list[Section]:
     async with async_session() as s:
-        q = select(Section).where(Section.group_id == group_id)
+        q = select(Section).where(Section.group_id == group_id, Section.deleted == False)  # noqa: E712
         if active_only:
             q = q.where(Section.is_active == True)  # noqa: E712
         return list((await s.scalars(q.order_by(Section.created_at))).all())
@@ -375,6 +394,20 @@ async def close_section(section_id: int) -> None:
     async with async_session() as s:
         await s.execute(update(Section).where(Section.id == section_id).values(is_active=False))
         await s.commit()
+
+
+async def delete_section(section_id: int, by: int) -> int:
+    """Полностью убирает раздел и его сдачи (если создан по ошибке). Возвращает число сдач."""
+    async with async_session() as s:
+        res = await s.execute(
+            update(Submission).where(Submission.section_id == section_id,
+                                     Submission.deleted_at.is_(None))
+            .values(deleted_at=utcnow(), deleted_by=by)
+        )
+        await s.execute(update(Section).where(Section.id == section_id)
+                        .values(deleted=True, is_active=False))
+        await s.commit()
+        return res.rowcount or 0
 
 
 async def sections_pending_end_notice() -> list[Section]:
