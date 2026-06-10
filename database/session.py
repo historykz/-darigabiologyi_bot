@@ -38,6 +38,11 @@ def _ensure_columns(sync_conn) -> None:
         if "week" not in cols:
             sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN week INTEGER DEFAULT 0"))
 
+    if "sections" in tables:
+        cols = {c["name"] for c in insp.get_columns("sections")}
+        if "deleted" not in cols:
+            sync_conn.execute(text("ALTER TABLE sections ADD COLUMN deleted BOOLEAN DEFAULT FALSE"))
+
     if "groups" in tables:
         cols = {c["name"] for c in insp.get_columns("groups")}
         if "is_active" not in cols:
