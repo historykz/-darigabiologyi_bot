@@ -10,10 +10,10 @@ def curator_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📂 Мои группы"), KeyboardButton(text="👥 Мои ученики")],
-            [KeyboardButton(text="📥 Кто сдал"), KeyboardButton(text="📚 Рабочие тетради")],
-            [KeyboardButton(text="📅 Дедлайн"), KeyboardButton(text="➕ Добавить")],
-            [KeyboardButton(text="🔍 Найти ученика"), KeyboardButton(text="📢 Рассылка")],
-            [KeyboardButton(text="🗑 Удалить запись")],
+            [KeyboardButton(text="📥 Кто сдал РТ"), KeyboardButton(text="📷 Кто сдал практику")],
+            [KeyboardButton(text="📚 Рабочие тетради"), KeyboardButton(text="📅 Дедлайн")],
+            [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="🔍 Найти ученика")],
+            [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="🗑 Удалить запись")],
         ],
         resize_keyboard=True,
     )
