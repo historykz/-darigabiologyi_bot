@@ -40,8 +40,10 @@ async def my_groups(message: Message, state: FSMContext):
     for i, g in enumerate(groups, start=1):
         n = await crud.count_students(g.id)
         lines.append(f"   {i}. {g.name} — {n} учеников")
-        rows.append([InlineKeyboardButton(
-            text=f"🔗 Ссылка для «{g.name}»", callback_data=f"cur_link:{g.id}")])
+        rows.append([
+            InlineKeyboardButton(text=f"🔗 Ссылка «{g.name}»", callback_data=f"cur_link:{g.id}"),
+            InlineKeyboardButton(text="📦 Выгрузить", callback_data=f"cur_export:{g.id}"),
+        ])
     if not groups:
         lines.append("   (пока нет групп)")
     rows.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="cur_new_group")])
@@ -463,67 +465,151 @@ async def broadcast_do(message: Message, state: FSMContext, bot: Bot):
     await message.answer(f"✅ Объявление отправлено: {sent} из {len(targets)} учеников.")
 
 
-# ─── КТО СДАЛ (по разделам и неделям) ───────────────────────────
-
-@router.message(F.text == "📥 Кто сдал")
-async def who_submitted_pick(message: Message, state: FSMContext):
-    await state.clear()
-    groups = await crud.get_groups(curator_id=message.from_user.id)
-    if not groups:
-        await message.answer("У тебя пока нет групп.")
-        return
-    await message.answer("📋 Выбери группу:", reply_markup=groups_inline(groups, "cur_who"))
-
-
-@router.callback_query(F.data.startswith("cur_who:"))
-async def who_sections(call: CallbackQuery):
+@router.callback_query(F.data.startswith("cur_export:"))
+async def export_group(call: CallbackQuery, bot: Bot):
     await call.answer()
     gid = int(call.data.split(":")[1])
     g = await crud.get_group(gid)
     if not g or g.curator_id != call.from_user.id:
         await call.message.answer("❌ Группа не найдена.")
         return
+    subs = await crud.get_submissions(group_id=gid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Только Excel-сводку", callback_data=f"cur_exxls:{gid}")],
+        [InlineKeyboardButton(text=f"📄 Excel + все PDF ({len(subs)} файлов)",
+                              callback_data=f"cur_exall:{gid}")],
+    ])
+    await call.message.answer(
+        f"📦 Выгрузка группы «{g.name}» — {len(subs)} сдач.\n\n"
+        "Файлы придут тебе в этот чат, дальше можешь переслать в любой другой чат.\n"
+        "Выбери формат:",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_exxls:"))
+async def export_group_xls(call: CallbackQuery, bot: Bot):
+    await call.answer("Готовлю Excel…")
+    from aiogram.types import BufferedInputFile
+    from services import section_export
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    raw = await section_export.group_xlsx(gid)
+    await bot.send_document(call.from_user.id,
+                            BufferedInputFile(raw, f"{g.name}_сводка.xlsx".replace(" ", "_")),
+                            caption=f"📊 Сводка группы «{g.name}» — листы по разделам.")
+
+
+@router.callback_query(F.data.startswith("cur_exall:"))
+async def export_group_all(call: CallbackQuery, bot: Bot):
+    await call.answer("Выгружаю…")
+    from aiogram.types import BufferedInputFile
+    from services import section_export
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    raw = await section_export.group_xlsx(gid)
+    await bot.send_document(call.from_user.id,
+                            BufferedInputFile(raw, f"{g.name}_сводка.xlsx".replace(" ", "_")),
+                            caption=f"📊 Сводка «{g.name}». Ниже — все PDF.")
+    subs = await crud.get_submissions(group_id=gid)
+    sent = 0
+    for sub in subs:
+        st = await crud.get_student(sub.student_id)
+        sec = await crud.get_section(sub.section_id) if sub.section_id else None
+        name = f"{st.first_name} {st.last_name}".strip() if st else "—"
+        t = "практика" if sub.type == "practice" else "конспект"
+        cap = f"{name} · {t}\n{sec.name if sec else '—'} · Неделя {sub.week} · {sub.submitted_name}"
+        try:
+            await bot.send_document(call.from_user.id, sub.pdf_file_id, caption=cap)
+            sent += 1
+        except Exception:
+            pass
+    await call.message.answer(f"✅ Выгружено {sent} PDF. Можешь переслать их в нужный чат.")
+
+
+# ─── КТО СДАЛ (по разделам и неделям) ───────────────────────────
+
+@router.message(F.text == "📥 Кто сдал РТ")
+async def who_rt_pick(message: Message, state: FSMContext):
+    await state.clear()
+    groups = await crud.get_groups(curator_id=message.from_user.id)
+    if not groups:
+        await message.answer("У тебя пока нет групп.")
+        return
+    await message.answer("📄 Конспекты (РТ) — выбери группу:",
+                         reply_markup=groups_inline(groups, "cur_whoW"))
+
+
+@router.message(F.text == "📷 Кто сдал практику")
+async def who_pr_pick(message: Message, state: FSMContext):
+    await state.clear()
+    groups = await crud.get_groups(curator_id=message.from_user.id)
+    if not groups:
+        await message.answer("У тебя пока нет групп.")
+        return
+    await message.answer("📷 Практика — выбери группу:",
+                         reply_markup=groups_inline(groups, "cur_whoP"))
+
+
+@router.callback_query(F.data.startswith("cur_whoW:"))
+async def who_sections_w(call: CallbackQuery):
+    await call.answer()
+    await _section_list(call, int(call.data.split(":")[1]), "workbook")
+
+
+@router.callback_query(F.data.startswith("cur_whoP:"))
+async def who_sections_p(call: CallbackQuery):
+    await call.answer()
+    await _section_list(call, int(call.data.split(":")[1]), "practice")
+
+
+async def _section_list(call: CallbackQuery, gid: int, sub_type: str):
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
     sections = await crud.get_sections(gid)
+    kind = "📷 Практика" if sub_type == "practice" else "📄 Конспекты (РТ)"
     rows = []
     for sec in sections:
         mark = "" if sec.is_active else " (завершён)"
         rows.append([InlineKeyboardButton(
-            text=f"📚 {sec.name}{mark}", callback_data=f"cur_sec:{sec.id}")])
+            text=f"📚 {sec.name}{mark}", callback_data=f"cur_secW:{sec.id}:{sub_type}")])
     rows.append([InlineKeyboardButton(text="➕ Добавить раздел", callback_data=f"cur_addsec:{gid}")])
-    txt = f"📂 Группа «{g.name}» — выбери раздел:" if sections else \
-        f"📂 Группа «{g.name}»\n\nРазделов пока нет. Создай первый (например «Анатомия») 👇"
+    txt = (f"{kind} · группа «{g.name}»\nВыбери раздел:" if sections else
+           f"{kind} · группа «{g.name}»\n\nРазделов пока нет. Создай первый 👇")
     await call.message.answer(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@router.callback_query(F.data.startswith("cur_sec:"))
-async def section_weeks(call: CallbackQuery):
+@router.callback_query(F.data.startswith("cur_secW:"))
+async def section_open(call: CallbackQuery):
     await call.answer()
-    sid = int(call.data.split(":")[1])
-    await _show_week(call, sid, 1)
+    _, sid, t = call.data.split(":")
+    await _show_week(call, int(sid), 1, t)
 
 
 @router.callback_query(F.data.startswith("cur_wk:"))
 async def section_week_nav(call: CallbackQuery):
     await call.answer()
-    _, sid, w = call.data.split(":")
-    await _show_week(call, int(sid), int(w))
+    _, sid, w, t = call.data.split(":")
+    await _show_week(call, int(sid), int(w), t)
 
 
-async def _show_week(call: CallbackQuery, sid: int, week: int):
+async def _show_week(call: CallbackQuery, sid: int, week: int, sub_type: str):
     sec = await crud.get_section(sid)
     if not sec or sec.curator_id != call.from_user.id:
         await call.message.answer("❌ Раздел не найден.")
         return
     g = await crud.get_group(sec.group_id)
     students = await crud.get_students(curator_id=call.from_user.id, group_id=sec.group_id)
-    subs = await crud.get_submissions(curator_id=call.from_user.id,
-                                      section_id=sid, week=week)
+    subs = await crud.get_submissions(curator_id=call.from_user.id, section_id=sid,
+                                      week=week, sub_type=sub_type)
     last = {}
     for sub in subs:
         last.setdefault(sub.student_id, sub)
 
-    lines = [f"📚 {sec.name} · Неделя {week} из {sec.weeks}",
-             f"Группа «{g.name}»\n"]
+    kind = "📷 Практика" if sub_type == "practice" else "📄 Конспекты (РТ)"
+    icon = "📷" if sub_type == "practice" else "📄"
+    lines = [f"{kind} · {sec.name} · Неделя {week} из {sec.weeks}", f"Группа «{g.name}»\n"]
     pdf_rows = []
     done = 0
     for st in students:
@@ -534,21 +620,51 @@ async def _show_week(call: CallbackQuery, sid: int, week: int):
             lines.append(f"   ✅ {st.first_name} {st.last_name}{mark} · "
                          f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
             pdf_rows.append(InlineKeyboardButton(
-                text=f"📄 {st.first_name}{mark}", callback_data=f"open_sub:{sub.id}"))
-    not_done = len(students) - done
-    lines.append(f"\nСдали: {done} из {len(students)} | Не сдали: {not_done}")
+                text=f"{icon} {st.first_name}{mark}", callback_data=f"open_sub:{sub.id}"))
+    lines.append(f"\nСдали: {done} из {len(students)} | Не сдали: {len(students) - done}")
 
     rows = [pdf_rows[j:j+2] for j in range(0, len(pdf_rows), 2)]
-    # навигация по неделям
     nav = []
     for w in range(1, sec.weeks + 1):
         label = f"·{w}·" if w == week else str(w)
-        nav.append(InlineKeyboardButton(text=label, callback_data=f"cur_wk:{sid}:{w}"))
-    week_rows = [nav[j:j+5] for j in range(0, len(nav), 5)]
-    rows += week_rows
-    rows.append([InlineKeyboardButton(text="📊 Excel этого раздела", callback_data=f"cur_secxls:{sid}")])
+        nav.append(InlineKeyboardButton(text=label, callback_data=f"cur_wk:{sid}:{w}:{sub_type}"))
+    rows += [nav[j:j+5] for j in range(0, len(nav), 5)]
+    rows.append([InlineKeyboardButton(text="📊 Excel раздела", callback_data=f"cur_secxls:{sid}"),
+                 InlineKeyboardButton(text="🗑 Удалить раздел", callback_data=f"cur_delsec:{sid}")])
     await call.message.answer("\n".join(lines)[:4000],
                               reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_delsec:"))
+async def del_section_confirm(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    sec = await crud.get_section(sid)
+    if not sec or sec.curator_id != call.from_user.id:
+        await call.message.answer("❌ Раздел не найден.")
+        return
+    subs = await crud.get_submissions(section_id=sid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"cur_delsec_yes:{sid}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cur_cancel"),
+    ]])
+    await call.message.answer(
+        f"🗑 Удалить раздел «{sec.name}»?\n"
+        f"Вместе с ним удалятся {len(subs)} сдач этого раздела.\n"
+        "Используй, если создал раздел по ошибке.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_delsec_yes:"))
+async def del_section_do(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    sec = await crud.get_section(sid)
+    if not sec or sec.curator_id != call.from_user.id:
+        await call.message.answer("❌ Раздел не найден.")
+        return
+    n = await crud.delete_section(sid, by=call.from_user.id)
+    await call.message.answer(f"✅ Раздел «{sec.name}» удалён (убрано {n} сдач).")
 
 
 # ── создание раздела ──
@@ -623,12 +739,44 @@ async def open_submission(call: CallbackQuery):
     st = await crud.get_student(sub.student_id)
     realname = f"{st.first_name} {st.last_name}".strip() if st else "—"
     sec = await crud.get_section(sub.section_id) if sub.section_id else None
-    sec_line = f"\n📚 {sec.name} · Неделя {sub.week}" if sec else ""
+    kind = "📷 практика" if sub.type == "practice" else "📄 конспект"
+    sec_line = f"\n{kind} · {sec.name} · Неделя {sub.week}" if sec else f"\n{kind}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 Удалить работу (разрешить пересдачу)",
+                             callback_data=f"cur_purge:{sub.id}")
+    ]])
     await call.message.answer_document(
         sub.pdf_file_id,
         caption=f"👤 {realname}{sec_line}\n📄 Файл: {sub.submitted_name}\n"
-                f"📤 {roles.fmt_absolute(sub.submitted_at_utc)}"
+                f"📤 {roles.fmt_absolute(sub.submitted_at_utc)}",
+        reply_markup=kb,
     )
+
+
+@router.callback_query(F.data.startswith("cur_purge:"))
+async def purge_submission(call: CallbackQuery, bot: Bot):
+    await call.answer()
+    sub_id = int(call.data.split(":")[1])
+    sub = await crud.get_submission(sub_id)
+    if not sub or sub.curator_id != call.from_user.id:
+        await call.message.answer("❌ Работа не найдена.")
+        return
+    st = await crud.get_student(sub.student_id)
+    sec = await crud.get_section(sub.section_id) if sub.section_id else None
+    await crud.soft_delete_submission(sub_id, by=call.from_user.id)
+    what = "практику" if sub.type == "practice" else "конспект"
+    await call.message.answer(
+        f"✅ Работа удалена. Теперь ученик может пересдать {what} за «"
+        f"{sec.name if sec else '—'}», неделя {sub.week}.")
+    # уведомим ученика
+    if st and st.user_id:
+        try:
+            await bot.send_message(
+                st.user_id,
+                f"♻️ Куратор удалил твою работу ({what}) по «{sec.name if sec else '—'}», "
+                f"неделя {sub.week}. Можешь сдать заново.")
+        except Exception:
+            pass
 
 
 # ─── РАБОЧИЕ ТЕТРАДИ (просмотр + скачивание) ────────────────────
