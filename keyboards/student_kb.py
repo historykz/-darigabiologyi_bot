@@ -10,7 +10,7 @@ def student_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📚 Рабочие тетради")],
-            [KeyboardButton(text="📤 Сдать РТ")],
+            [KeyboardButton(text="📤 Сдать РТ"), KeyboardButton(text="📷 Сдать практику")],
             [KeyboardButton(text="📁 Мои работы")],
         ],
         resize_keyboard=True,
