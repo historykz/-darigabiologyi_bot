@@ -860,19 +860,47 @@ async def student_works(call: CallbackQuery):
 @router.message(F.text == "📢 Рассылка")
 async def broadcast_start(message: Message, state: FSMContext):
     await state.clear()
-    await state.set_state(CuratorStates.broadcast)
+    groups = await crud.get_groups(curator_id=message.from_user.id)
+    if not groups:
+        await message.answer("У тебя пока нет групп.")
+        return
+    rows = [[InlineKeyboardButton(text=f"📂 {g.name}", callback_data=f"cur_bcg:{g.id}")]
+            for g in groups]
+    rows.append([InlineKeyboardButton(text="📣 Всем моим ученикам", callback_data="cur_bcg:all")])
     await message.answer(
-        "📢 Рассылка — это объявление сразу всем твоим ученикам.\n"
-        "Например: «Дедлайн перенесён на субботу».\n\n"
-        "Напиши текст одним сообщением — и я разошлю его всем, кто уже запускал бота.\n"
+        "📢 Рассылка — объявление ученикам.\n"
+        "Кому отправить? Выбери группу или «Всем» 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_bcg:"))
+async def broadcast_pick(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    val = call.data.split(":")[1]
+    if val == "all":
+        await state.update_data(bc_group=None, bc_label="всем твоим ученикам")
+    else:
+        g = await crud.get_group(int(val))
+        if not g or g.curator_id != call.from_user.id:
+            await call.message.answer("❌ Группа не найдена.")
+            return
+        await state.update_data(bc_group=int(val), bc_label=f"группе «{g.name}»")
+    await state.set_state(CuratorStates.broadcast)
+    data = await state.get_data()
+    await call.message.answer(
+        f"📢 Рассылка: {data['bc_label']}.\n\n"
+        "Напиши текст одним сообщением — я разошлю его (тем, кто уже запускал бота).\n"
         "Передумал(а)? Напиши /cancel.")
 
 
 @router.message(CuratorStates.broadcast, F.text)
 async def broadcast_do(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    gid = data.get("bc_group")
+    label = data.get("bc_label", "ученикам")
     await state.clear()
     text = message.text
-    targets = await crud.broadcast_targets(curator_id=message.from_user.id)
+    targets = await crud.broadcast_targets(curator_id=message.from_user.id, group_id=gid)
     if not targets:
         await message.answer("Пока некому отправлять — ученики ещё не запускали бота.")
         return
@@ -883,7 +911,7 @@ async def broadcast_do(message: Message, state: FSMContext, bot: Bot):
             sent += 1
         except Exception:
             pass
-    await message.answer(f"✅ Объявление отправлено: {sent} из {len(targets)} учеников.")
+    await message.answer(f"✅ Объявление ({label}) отправлено: {sent} из {len(targets)} учеников.")
 
 
 @router.callback_query(F.data.startswith("cur_export:"))
@@ -1042,16 +1070,17 @@ async def _show_week(call: CallbackQuery, sid: int, week: int, sub_type: str):
         sub = last.get(st.id)
         if sub:
             done += 1
+            pg = f"{sub.pages} стр." if getattr(sub, "pages", 0) else "—"
+            when = f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M} ({roles.fmt_relative(sub.submitted_at_utc)})"
             if sub.is_late:
-                lines.append(f"   ⚠️ {fio} · ПРОСРОЧЕНО +{roles.fmt_late(sub.late_by_minutes)} · "
-                             f"сдал(а) {roles.fmt_relative(sub.submitted_at_utc)}")
+                lines.append(f"   ⚠️ {fio} · сдал(а) {when} · ПРОСРОЧЕНО +{roles.fmt_late(sub.late_by_minutes)} · {pg}")
             else:
-                lines.append(f"   ✅ {fio} · сдал(а) {roles.fmt_relative(sub.submitted_at_utc)}")
+                lines.append(f"   ✅ {fio} · сдал(а) {when} · {pg}")
             pdf_rows.append(InlineKeyboardButton(
                 text=f"{icon} {st.first_name}" + (" ⚠️" if sub.is_late else ""),
                 callback_data=f"open_sub:{sub.id}"))
         else:
-            lines.append(f"   ❌ {fio} · не сдал(а)")
+            lines.append(f"   ❌ {fio} · не сдал(а) · 0 стр.")
     lines.append(f"\nСдали: {done} из {len(students)} | Не сдали: {len(students) - done}")
 
     rows = [pdf_rows[j:j+2] for j in range(0, len(pdf_rows), 2)]
@@ -1115,19 +1144,21 @@ async def add_section_start(call: CallbackQuery, state: FSMContext):
 
 @router.message(CuratorStates.new_section_name, F.text)
 async def add_section_name(message: Message, state: FSMContext):
-    await state.update_data(sec_name=message.text.strip())
-    await state.set_state(CuratorStates.new_section_period)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="7 дней (1 неделя)", callback_data="cur_secper:7"),
-        InlineKeyboardButton(text="14 дней (2 недели)", callback_data="cur_secper:14"),
-    ]])
+    await state.update_data(sec_name=message.text.strip(), sec_period=7)
+    await state.set_state(CuratorStates.new_section_count)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="4 недели (≈ месяц)", callback_data="cur_seccnt:4"),
+         InlineKeyboardButton(text="2 недели", callback_data="cur_seccnt:2")],
+        [InlineKeyboardButton(text="✍️ Указать другое число", callback_data="cur_seccnt:manual")],
+    ])
     await message.answer(
         f"\u2705 Название принято: «{message.text.strip()}»\n\n"
-        "\U0001f4d8 <b>ШАГ 2 из 4 — длительность одной недели</b>\n\n"
-        "Раздел делится на «недели» (периоды). Сколько дней длится ОДНА такая неделя?\n\n"
-        "Пример: «Ботаника 1» идёт 7 дней, потом «Ботаника 2» — ещё 7 дней, и так далее.\n"
-        "Или каждая тема длится 14 дней (2 недели).\n\n"
-        "Нажми на кнопку 👇",
+        "\U0001f4d8 <b>ШАГ 2 из 3 — сколько всего недель идёт раздел?</b>\n\n"
+        "Одна неделя = 7 дней (стандарт). Например, месяц — это 4 недели "
+        "(Анатомия 1, 2, 3, 4).\n\n"
+        "Выбери кнопкой или нажми «Указать другое число» и напиши, например: 6 👇\n"
+        "(если нужно по 2 недели на тему — тоже можно, напиши число недель, "
+        "а период поменяешь потом в настройках раздела)",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -1151,7 +1182,7 @@ async def add_section_period(call: CallbackQuery, state: FSMContext):
     ])
     await call.message.answer(
         f"\u2705 Одна неделя = {period} дней.\n\n"
-        "\U0001f4d8 <b>ШАГ 3 из 4 — сколько всего недель идёт раздел?</b>\n\n"
+        "\U0001f4d8 <b>ШАГ 2 из 3 — сколько всего недель идёт раздел?</b>\n\n"
         "Это весь срок предмета. Например, если раздел длится месяц — это 4 недели "
         "(Ботаника 1, 2, 3, 4).\n\n"
         "Выбери кнопкой или нажми «Указать другое число» и напиши, например: 6 👇",
@@ -1194,7 +1225,7 @@ async def _ask_section_start(target, state: FSMContext):
     ])
     await target.answer(
         f"\u2705 Раздел будет идти {weeks} нед. по {period} дн.\n\n"
-        "\U0001f4d8 <b>ШАГ 4 из 4 — с какого числа стартует раздел?</b>\n\n"
+        "\U0001f4d8 <b>ШАГ 3 из 3 — с какого числа стартует раздел?</b>\n\n"
         "От этого дня пойдёт отсчёт. Неделя 1 начнётся в этот день, через "
         f"{period} дн. она закроется и начнётся неделя 2, и так далее.\n"
         "Конечную дату бот посчитает сам.\n\n"
