@@ -135,12 +135,15 @@ async def _begin_submit(uid: int, target, state: FSMContext, sub_type: str = "wo
     head = "📷 <b>Сдача практики</b>" if sub_type == "practice" else "📤 <b>Сдача РТ</b>"
     if len(sections) == 1:
         await state.update_data(section_id=sections[0].id)
-        await _ask_name(target, state, sections[0], sub_type)
+        await _after_section(target, state, sections[0], sub_type)
     else:
         rows = [[InlineKeyboardButton(text=f"📚 {s.name}", callback_data=f"sub_sec:{s.id}")]
                 for s in sections]
         await state.set_state(StudentStates.submit_pick_section)
-        await target.answer(f"{head}\n\nВыбери предмет (раздел) 👇",
+        await target.answer(
+            f"{head}\n\n"
+            "Раздел — это предмет, который вы сейчас проходите.\n"
+            "Нажми на нужный 👇",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -155,16 +158,59 @@ async def submit_pick_section(call: CallbackQuery, state: FSMContext):
         return
     data = await state.get_data()
     await state.update_data(section_id=sid)
-    await _ask_name(call.message, state, sec, data.get("submit_type", "workbook"))
+    await _after_section(call.message, state, sec, data.get("submit_type", "workbook"))
+
+
+async def _after_section(target, state: FSMContext, section, sub_type: str):
+    """Практика — сразу выбор недели (1 или 2, без названия). Конспект — спросить название."""
+    if sub_type == "practice":
+        await _ask_week(target, state, section, sub_type)
+    else:
+        await _ask_name(target, state, section, sub_type)
+
+
+async def _ask_week(target, state: FSMContext, section, sub_type: str):
+    if sub_type == "practice":
+        total = max(1, getattr(section, "practices", 2) or 2)
+        row, rows = [], []
+        for p in range(1, total + 1):
+            row.append(InlineKeyboardButton(text=f"Практика {p}", callback_data=f"sub_wk:{p}"))
+            if len(row) == 2:
+                rows.append(row); row = []
+        if row:
+            rows.append(row)
+        await state.set_state(StudentStates.submit_pick_week)
+        await target.answer(
+            f"📷 Практика · раздел <b>{html.escape(section.name)}</b>\n\n"
+            f"<b>Какая это практика по счёту?</b> (всего их {total})\n"
+            "Если сдаёшь первый раз — жми «Практика 1», второй раз — «Практика 2» 👇",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        return
+    rows, row = [], []
+    for w in range(1, section.weeks + 1):
+        row.append(InlineKeyboardButton(text=f"Неделя {w}", callback_data=f"sub_wk:{w}"))
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    await state.set_state(StudentStates.submit_pick_week)
+    await target.answer(
+        f"<b>Шаг 2 — За какую неделю раздела «{html.escape(section.name)}»?</b>\n"
+        "Неделя — это номер учебной недели в этом предмете.\n"
+        "Если сдаёшь задание первой недели — жми «Неделя 1» 👇",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 async def _ask_name(target, state: FSMContext, section, sub_type: str):
     await state.set_state(StudentStates.submit_name)
     await target.answer(
         f"📚 Раздел: <b>{html.escape(section.name)}</b>\n\n"
-        f"<b>Шаг 1 — Введи название файла</b> (это {_type_label(sub_type)})\n"
-        "Например: <b>РТ №3</b> или <b>Практика урок 5</b>.\n"
-        "Под этим именем PDF сохранится и придёт куратору 👇",
+        "<b>Шаг 1 — Введи название файла</b>\n"
+        "Это просто подпись твоей работы, чтобы куратор понял, что ты сдаёшь.\n"
+        "Например: <b>РТ №3</b> или <b>Конспект урок 5</b>.\n"
+        "Напиши название одним сообщением 👇",
         parse_mode="HTML",
     )
 
@@ -210,57 +256,88 @@ async def submit_pick_week(call: CallbackQuery, state: FSMContext):
     # защита от повторной сдачи
     if student and await crud.has_submission(student.id, section_id, week, sub_type):
         await state.clear()
-        what = "практику" if sub_type == "practice" else "конспект"
-        await call.message.answer(
-            f"✅ Ты уже сдал(а) {what} по разделу «{sec.name if sec else '—'}», неделя {week}.\n\n"
-            "Повторно сдать нельзя. Если нужно пересдать — попроси куратора удалить "
-            "прежнюю работу, потом сможешь отправить заново.")
+        if sub_type == "practice":
+            await call.message.answer(
+                f"\u2705 Ты уже сдал(а) практику {week} по разделу \u00ab{sec.name if sec else '\u2014'}\u00bb.\n\n"
+                "Сдать её повторно нельзя \u2014 так бот защищает от случайных двойных отправок.\n"
+                "Если нужно заменить работу \u2014 напиши куратору, он удалит старую.")
+        else:
+            await call.message.answer(
+                f"\u2705 Ты уже сдал(а) конспект по разделу \u00ab{sec.name if sec else '\u2014'}\u00bb, неделя {week}.\n\n"
+                "Сдать повторно нельзя \u2014 так бот защищает от случайных двойных отправок.\n"
+                "Если нужно заменить работу \u2014 напиши куратору, он удалит старую.")
         return
 
+    # практика \u2014 без недельного графика, сразу к фото
+    if sub_type == "practice":
+        await _go_photos(call.message, state, sec, week, sub_type)
+        return
+
+    cur = roles.section_current_week(sec) if sec else 1
+    if cur == 0:
+        await state.clear()
+        await call.message.answer(
+            f"\u23f3 Раздел \u00ab{sec.name}\u00bb ещё не начался (старт {roles.section_start_str(sec)}).\n"
+            "Сдавать пока рано \u2014 дождись начала.")
+        return
+    if week > cur:
+        await state.clear()
+        await call.message.answer(
+            f"\U0001f6ab Сейчас идёт неделя {cur} раздела \u00ab{sec.name}\u00bb, а не {week}.\n"
+            "За будущие недели сдавать нельзя \u2014 выбери текущую или прошлую неделю.")
+        return
+    if week == cur:
+        await _go_photos(call.message, state, sec, week, sub_type)
+        return
+    # прошлая неделя \u2014 дедлайн прошёл, подтверждение
+    await state.update_data(pending_week=week)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="\u2705 Да, уверен(а)", callback_data=f"sub_wk_yes:{week}"),
+        InlineKeyboardButton(text="\u274c Отмена", callback_data="sub_wk_no"),
+    ]])
+    await call.message.answer(
+        f"\u26a0\ufe0f Сейчас идёт неделя {cur} раздела \u00ab{sec.name}\u00bb.\n"
+        f"Ты выбрал(а) неделю {week} \u2014 её дедлайн уже прошёл "
+        f"(был до {roles.section_deadline_str(sec, week)}).\n\n"
+        "Точно хочешь сдать за прошлую неделю? Работа будет помечена как просроченная.",
+        reply_markup=kb)
+
+
+@router.callback_query(StudentStates.submit_pick_week, F.data == "sub_wk_no")
+async def submit_week_cancel(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    await call.message.answer("Отменено. Можешь начать заново, когда будешь готов(а).")
+
+
+@router.callback_query(StudentStates.submit_pick_week, F.data.startswith("sub_wk_yes:"))
+async def submit_week_confirm(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    week = int(call.data.split(":")[1])
+    data = await state.get_data()
+    sec = await crud.get_section(data.get("section_id"))
+    await _go_photos(call.message, state, sec, week, data.get("submit_type", "workbook"))
+
+
+async def _go_photos(target, state: FSMContext, sec, week: int, sub_type: str):
     await state.update_data(week=week, photos=[])
     await state.set_state(StudentStates.submit_photos)
-    await call.message.answer(
-        f"✅ Неделя {week}\n\n"
-        "────────────────\n"
-        "Шаг 3 — Отправь фото\n\n"
-        "📸 Фотографируй страницы и отправляй по одному. Можно сразу по 10–20 фото.\n\n"
-        "• Хорошее освещение\n• Телефон ровно над листом\n• Текст читаем\n\n"
-        "Когда все страницы отправлены — нажми «📄 Отправить в PDF»."
-    )
-
-
-@router.message(StudentStates.submit_photos, F.photo)
-async def submit_photo(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    photos: list[str] = data.get("photos", [])
-    # берём самое крупное фото
-    file_id = message.photo[-1].file_id
-    photos.append(file_id)
-    await state.update_data(photos=photos)
-    await message.answer(
-        f"✅ Фото #{len(photos)} добавлено\n"
-        f"Всего принято: {len(photos)} страниц\n\n"
-        "Если ещё не все страницы — продолжай отправлять.\n"
-        "Когда всё готово — нажми кнопку ниже 👇",
-        reply_markup=send_pdf_kb(),
-    )
-
-
-@router.message(StudentStates.submit_photos, F.document)
-async def submit_doc_as_photo(message: Message, state: FSMContext):
-    # на случай если фото прислано документом-изображением
-    if message.document.mime_type and message.document.mime_type.startswith("image/"):
-        data = await state.get_data()
-        photos: list[str] = data.get("photos", [])
-        photos.append(message.document.file_id)
-        await state.update_data(photos=photos)
-        await message.answer(
-            f"✅ Фото #{len(photos)} добавлено\nВсего принято: {len(photos)} страниц",
-            reply_markup=send_pdf_kb(),
-        )
-    else:
-        await message.answer("📸 Пришли именно фото страниц. Когда закончишь — нажми «📄 Отправить в PDF».",
-                             reply_markup=send_pdf_kb())
+    if sub_type == "practice":
+        await target.answer(
+            f"\u2705 Практика {week} \u00b7 раздел \u00ab{sec.name if sec else '\u2014'}\u00bb\n\n"
+            "\U0001f4f7 Отправь снимок экрана выполненной практики.\n"
+            "Снимок экрана \u2014 это обычное фото/скриншот с телефона или компьютера.\n"
+            "Можно несколько кадров \u2014 я соберу их в один PDF.\n\n"
+            "Когда всё отправил(а) \u2014 нажми кнопку \u00ab\U0001f4c4 Отправить в PDF\u00bb, и работа сама уйдёт куратору.")
+        return
+    await target.answer(
+        f"\u2705 Неделя {week} \u00b7 раздел \u00ab{sec.name if sec else '\u2014'}\u00bb\n\n"
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        "Шаг 3 \u2014 Отправь фото\n\n"
+        "\U0001f4f8 Фотографируй страницы и отправляй по одному. Можно сразу по 10\u201320 фото.\n\n"
+        "\u2022 Хорошее освещение\n\u2022 Телефон ровно над листом\n\u2022 Текст читаем\n\n"
+        "Когда все страницы отправлены \u2014 нажми кнопку \u00ab\U0001f4c4 Отправить в PDF\u00bb, "
+        "и я соберу их в один файл и сам отправлю куратору.")
 
 
 @router.callback_query(StudentStates.submit_photos, F.data == "student_make_pdf")
@@ -268,7 +345,12 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     data = await state.get_data()
     photos: list[str] = data.get("photos", [])
-    file_label: str = (data.get("fname") or "Работа").strip()
+    _t = data.get("submit_type", "workbook")
+    _w = int(data.get("week") or 0)
+    if _t == "practice":
+        file_label = f"Практика {_w}" if _w else "Практика"
+    else:
+        file_label = (data.get("fname") or "Работа").strip()
     if not photos:
         await call.message.answer("📸 Сначала пришли хотя бы одно фото.")
         return
@@ -313,7 +395,10 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     # дедлайн-контроль
-    is_late, late_min = await _check_late(student.curator_id)
+    if sub_type == "practice":
+        is_late, late_min = False, 0  # дедлайн относится только к РТ
+    else:
+        is_late, late_min = roles.section_is_week_late(section, week) if section else (False, 0)
 
     # имя PDF — раздел + неделя + название (убираем недопустимые символы)
     kind = "практика" if sub_type == "practice" else "РТ"
@@ -334,17 +419,19 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     )
 
     kind_word = "Практика" if sub_type == "practice" else "Рабочая тетрадь"
+    wk_label = f"Практика {week}" if sub_type == "practice" else f"Неделя {week}"
     if is_late:
         await call.message.answer(
-            "⚠️ Работа принята.\n"
-            f"Дедлайн был пройден, ты сдал(а) на +{late_min} мин позже.\n"
-            "Куратор уведомлён."
+            "⚠️ Работа принята, но СДАНА ПОСЛЕ ДЕДЛАЙНА.\n"
+            f"📚 {sec_name} · Неделя {week}\n"
+            f"⏰ Опоздание: +{_fmt_late(late_min)}\n"
+            "Куратор увидит, что работа просрочена."
         )
     else:
         await call.message.answer(
             f"🎉 <b>{kind_word} сдана!</b>\n\n"
             f"👤 {html.escape(realname)}\n"
-            f"📚 Раздел: <b>{html.escape(sec_name)}</b> · Неделя {week}\n"
+            f"📚 Раздел: <b>{html.escape(sec_name)}</b> · {wk_label}\n"
             f"📄 Файл: <b>{html.escape(file_label)}</b>\n"
             f"Страниц: {len(photos)}\n"
             "📨 PDF отправлен куратору\n\n"
@@ -363,25 +450,51 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
 
 
-async def _check_late(curator_id: int) -> tuple[bool, int]:
-    """Просрочена ли сдача относительно дедлайна куратора.
+def _fmt_late(mins: int) -> str:
+    """Человеческое опоздание: мин / ч / дни."""
+    if mins < 60:
+        return f"{mins} мин"
+    h, mm = divmod(mins, 60)
+    if h < 24:
+        return f"{h} ч" + (f" {mm} мин" if mm else "")
+    d, hh = divmod(h, 24)
+    return f"{d} дн" + (f" {hh} ч" if hh else "")
 
-    Берём ближайший ПРОШЕДШИЙ дедлайн. Если с него прошло не больше
-    12 часов — сдача считается просроченной на это число минут.
-    Иначе ученик сдаёт заранее к следующему дедлайну → вовремя.
+
+def _week_due_utc(section, week: int, dl) -> datetime | None:
+    """Срок сдачи конкретной недели раздела (UTC).
+
+    Неделя 1 — первый дедлайн (день недели + время куратора) на/после старта раздела,
+    каждая следующая неделя — +7 дней.
     """
+    if not section or not dl:
+        return None
+    try:
+        h, m = map(int, dl.deadline_time_utc.split(":"))
+    except Exception:
+        return None
+    start = section.created_at
+    if start is None:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    days_ahead = (dl.weekday - start.weekday()) % 7
+    first = (start + timedelta(days=days_ahead)).replace(
+        hour=h, minute=m, second=0, microsecond=0)
+    if first < start:
+        first += timedelta(days=7)
+    return first + timedelta(days=7 * (max(1, week) - 1))
+
+
+async def _check_late_for(section, week: int, curator_id: int) -> tuple[bool, int]:
+    """Просрочена ли сдача недели раздела. Любая отправка после срока — просрочка."""
     dl = await crud.get_deadline(curator_id)
-    if not dl:
+    due = _week_due_utc(section, week, dl)
+    if due is None:
         return False, 0
     now = datetime.now(timezone.utc)
-    h, m = map(int, dl.deadline_time_utc.split(":"))
-    anchor = now.replace(hour=h, minute=m, second=0, microsecond=0)
-    delta_days = (now.weekday() - dl.weekday) % 7
-    deadline = anchor - timedelta(days=delta_days)
-    if deadline > now:
-        deadline -= timedelta(days=7)
-    diff_min = int((now - deadline).total_seconds() // 60)
-    if 0 < diff_min <= 12 * 60:
+    diff_min = int((now - due).total_seconds() // 60)
+    if diff_min > 0:
         return True, diff_min
     return False, 0
 
