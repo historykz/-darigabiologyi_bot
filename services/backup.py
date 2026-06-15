@@ -79,6 +79,7 @@ async def collect() -> dict:
             {"id": sub.id, "student_id": sub.student_id, "type": sub.type,
              "section_id": getattr(sub, "section_id", None),
              "week": getattr(sub, "week", 0),
+             "pages": getattr(sub, "pages", 0),
              "pdf_file_id": sub.pdf_file_id, "submitted_name": sub.submitted_name,
              "submitted_at_utc": sub.submitted_at_utc.isoformat() if sub.submitted_at_utc else None,
              "curator_id": sub.curator_id, "is_late": sub.is_late,
