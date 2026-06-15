@@ -91,7 +91,9 @@ async def restore(data: dict) -> dict:
                 existing.name = sec["name"]
                 existing.weeks = sec.get("weeks", 4)
                 existing.practices = sec.get("practices", 2)
+                existing.period_days = sec.get("period_days", 7)
                 existing.start_date = _dt(sec.get("start_date"))
+                existing.end_date = _dt(sec.get("end_date"))
                 existing.is_active = sec.get("is_active", True)
                 existing.deleted = sec.get("deleted", False)
                 existing.ended_notified = sec.get("ended_notified", False)
@@ -99,7 +101,9 @@ async def restore(data: dict) -> dict:
                 s.add(Section(id=sec["id"], group_id=sec["group_id"],
                               curator_id=sec["curator_id"], name=sec["name"],
                               weeks=sec.get("weeks", 4), practices=sec.get("practices", 2),
+                              period_days=sec.get("period_days", 7),
                               start_date=_dt(sec.get("start_date")),
+                              end_date=_dt(sec.get("end_date")),
                               is_active=sec.get("is_active", True),
                               deleted=sec.get("deleted", False),
                               ended_notified=sec.get("ended_notified", False),
