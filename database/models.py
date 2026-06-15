@@ -41,6 +41,7 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(128))
     token: Mapped[str | None] = mapped_column(String(32), unique=True, index=True, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)  # архив (скрыта куратором)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     students: Mapped[list["Student"]] = relationship(back_populates="group")
