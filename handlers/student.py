@@ -477,7 +477,7 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     sub = await crud.add_submission(
         student_id=student.id, pdf_file_id=pdf_file_id, submitted_name=file_label,
         curator_id=student.curator_id, section_id=section_id, week=week, sub_type=sub_type,
-        is_late=is_late, late_by_minutes=late_min,
+        is_late=is_late, late_by_minutes=late_min, pages=len(photos),
     )
 
     kind_word = "Практика" if sub_type == "practice" else "Рабочая тетрадь"
