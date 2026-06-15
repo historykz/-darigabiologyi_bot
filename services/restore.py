@@ -157,6 +157,7 @@ async def restore(data: dict) -> dict:
                              type=sub.get("type", "workbook"),
                              section_id=sub.get("section_id"),
                              week=sub.get("week", 0),
+                             pages=sub.get("pages", 0),
                              pdf_file_id=sub["pdf_file_id"],
                              submitted_name=sub["submitted_name"],
                              submitted_at_utc=_dt(sub.get("submitted_at_utc")),
