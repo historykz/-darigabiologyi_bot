@@ -1027,22 +1027,22 @@ async def _show_week(call: CallbackQuery, sid: int, week: int, sub_type: str):
     lines = [f"{kind} · {sec.name} · {wk_word}", f"Группа «{g.name}»\n"]
     pdf_rows = []
     done = 0
+    # students уже отсортированы по фамилии+имени (А→Я)
     for st in students:
+        fio = f"{st.last_name} {st.first_name}".strip()
         sub = last.get(st.id)
         if sub:
             done += 1
             if sub.is_late:
-                mins = sub.late_by_minutes
-                lt = (f"{mins} мин" if mins < 60 else
-                      (f"{mins//60} ч" if mins < 1440 else f"{mins//1440} дн"))
-                lines.append(f"   ⚠️ {st.first_name} {st.last_name} · ПРОСРОЧЕНО +{lt} · "
-                             f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+                lines.append(f"   ⚠️ {fio} · ПРОСРОЧЕНО +{roles.fmt_late(sub.late_by_minutes)} · "
+                             f"сдал(а) {roles.fmt_relative(sub.submitted_at_utc)}")
             else:
-                lines.append(f"   ✅ {st.first_name} {st.last_name} · "
-                             f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+                lines.append(f"   ✅ {fio} · сдал(а) {roles.fmt_relative(sub.submitted_at_utc)}")
             pdf_rows.append(InlineKeyboardButton(
                 text=f"{icon} {st.first_name}" + (" ⚠️" if sub.is_late else ""),
                 callback_data=f"open_sub:{sub.id}"))
+        else:
+            lines.append(f"   ❌ {fio} · не сдал(а)")
     lines.append(f"\nСдали: {done} из {len(students)} | Не сдали: {len(students) - done}")
 
     rows = [pdf_rows[j:j+2] for j in range(0, len(pdf_rows), 2)]
@@ -1542,3 +1542,4 @@ def _parse_contact(contact: str) -> tuple[str | None, int | None]:
 def _utc_to_local_hhmm(hhmm_utc: str) -> str:
     h, m = map(int, hhmm_utc.split(":"))
     return f"{(h + 5) % 24:02d}:{m:02d}"
+
