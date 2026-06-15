@@ -1,5 +1,5 @@
 """Определение роли по telegram_id и форматирование времени (UTC+5)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import ADMIN_ID, TZ
 from database import crud
@@ -31,6 +31,56 @@ def to_local(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(TZ)
+
+
+def now_local() -> datetime:
+    return datetime.now(TZ)
+
+
+def _section_start_local(section) -> datetime:
+    """Локальная полночь дня старта раздела (или дня создания, если дату не задали)."""
+    base = getattr(section, "start_date", None) or section.created_at
+    if base is None:
+        base = datetime.now(timezone.utc)
+    loc = to_local(base)
+    return loc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def section_week_end_local(section, week: int) -> datetime:
+    """Момент закрытия недели (локально). Неделя длится 7 дней; конец = старт + week*7 дней."""
+    from datetime import timedelta
+    return _section_start_local(section) + timedelta(days=7 * week)
+
+
+def section_current_week(section) -> int:
+    """Текущая неделя: 0 — ещё не началось; 1..weeks; >weeks — все недели прошли."""
+    start = _section_start_local(section)
+    now = now_local()
+    if now < start:
+        return 0
+    return (now - start).days // 7 + 1
+
+
+def section_deadline_str(section, week: int) -> str:
+    """Дата дедлайна недели для показа человеку: «DD.MM 23:59» (последний день недели)."""
+    from datetime import timedelta
+    end = section_week_end_local(section, week)
+    last_day = end - timedelta(days=1)
+    return f"{last_day.day:02d}.{last_day.month:02d} 23:59"
+
+
+def section_start_str(section) -> str:
+    s = _section_start_local(section)
+    return f"{s.day:02d}.{s.month:02d}.{s.year}"
+
+
+def section_is_week_late(section, week: int) -> tuple[bool, int]:
+    """Просрочена ли неделя сейчас. Возвращает (просрочено, минут_опоздания)."""
+    end = section_week_end_local(section, week)
+    now = now_local()
+    if now >= end:
+        return True, int((now - end).total_seconds() // 60)
+    return False, 0
 
 
 def fmt_absolute(dt: datetime) -> str:
