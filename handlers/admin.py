@@ -60,6 +60,7 @@ async def curator_card(call: CallbackQuery):
     gnames = ", ".join(g.name for g in groups) if groups else "пока нет групп"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить учеников", callback_data=f"adm_curadd:{tg_id}")],
+        [InlineKeyboardButton(text="➕ Создать группу", callback_data=f"adm_curnewgrp:{tg_id}")],
         [InlineKeyboardButton(text="👥 Список учеников", callback_data=f"adm_curlist:{tg_id}")],
         [InlineKeyboardButton(text="➖ Снять роль куратора", callback_data=f"adm_delcur:{tg_id}")],
     ])
@@ -69,8 +70,38 @@ async def curator_card(call: CallbackQuery):
         f"👥 Всего учеников: {total_students}\n\n"
         "Что сделать?\n"
         "➕ Добавить учеников — выбрать группу и записать учеников за куратора.\n"
+        "➕ Создать группу — создать новую группу этому куратору.\n"
         "👥 Список учеников — посмотреть всех его учеников по группам.",
         reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm_curnewgrp:"))
+async def admin_create_group_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    tg_id = int(call.data.split(":")[1])
+    await state.set_state(AdminStates.new_group_for)
+    await state.update_data(target_curator=tg_id)
+    u = await crud.get_user_by_tg(tg_id)
+    name = (f"{u.first_name or ''}".strip() if u else None) or str(tg_id)
+    await call.message.answer(
+        f"➕ Создаём группу для куратора {name}.\n"
+        "Напиши название группы одним сообщением (например «3 поток») 👇")
+
+
+@router.message(AdminStates.new_group_for, F.text)
+async def admin_create_group_do(message: Message, state: FSMContext):
+    data = await state.get_data()
+    tg_id = data["target_curator"]
+    name = message.text.strip()[:128]
+    await state.clear()
+    g = await crud.create_group(tg_id, name)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить учеников сейчас", callback_data=f"adm_curaddg:{tg_id}:{g.id}")],
+        [InlineKeyboardButton(text="↩️ К карточке куратора", callback_data=f"adm_cur:{tg_id}")],
+    ])
+    await message.answer(
+        f"✅ Группа «{name}» создана для куратора.\n"
+        "Можно сразу добавить в неё учеников 👇", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("adm_curlist:"))
@@ -99,9 +130,11 @@ async def curator_add_pick_group(call: CallbackQuery):
     tg_id = int(call.data.split(":")[1])
     groups = await crud.get_groups(curator_id=tg_id, include_hidden=True)
     if not groups:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="➕ Создать группу", callback_data=f"adm_curnewgrp:{tg_id}")]])
         await call.message.answer(
-            "У куратора пока нет групп — он создаёт их сам в «📂 Мои группы».\n"
-            "Как создаст хотя бы одну, сможешь добавлять в неё учеников отсюда.")
+            "У куратора пока нет групп. Создай первую кнопкой ниже — "
+            "потом сможешь добавлять в неё учеников.", reply_markup=kb)
         return
     rows = [[InlineKeyboardButton(text=f"📂 {g.name}", callback_data=f"adm_curaddg:{tg_id}:{g.id}")]
             for g in groups]
@@ -618,3 +651,4 @@ async def admin_broadcast_do(message: Message, state: FSMContext, bot: Bot):
         except Exception:
             pass
     await message.answer(f"✅ Отправлено: {sent} из {len(targets)} учеников.")
+
