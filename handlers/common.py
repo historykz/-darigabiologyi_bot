@@ -204,3 +204,4 @@ async def fallback(message: Message, state: FSMContext):
 
 async def resolve_role(message: Message) -> str:
     return await roles.get_role(message.from_user.id)
+
