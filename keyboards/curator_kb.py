@@ -46,3 +46,4 @@ def weekdays_kb() -> InlineKeyboardMarkup:
     row = [InlineKeyboardButton(text=d, callback_data=f"cur_dl_setday:{i}")
            for i, d in enumerate(days)]
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
