@@ -83,6 +83,8 @@ class Section(Base):
     curator_id: Mapped[int] = mapped_column(BigInteger, index=True)
     name: Mapped[str] = mapped_column(String(128))
     weeks: Mapped[int] = mapped_column(Integer, default=4)
+    practices: Mapped[int] = mapped_column(Integer, default=2)
+    start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     ended_notified: Mapped[bool] = mapped_column(Boolean, default=False)
