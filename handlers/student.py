@@ -289,9 +289,20 @@ async def submit_pick_week(call: CallbackQuery, state: FSMContext):
         return
     if week > cur:
         await state.clear()
-        await call.message.answer(
-            f"\U0001f6ab Сейчас идёт неделя {cur} раздела \u00ab{sec.name}\u00bb, а не {week}.\n"
-            "За будущие недели сдавать нельзя \u2014 выбери текущую или прошлую неделю.")
+        # когда откроется именно следующая неделя (cur+1)
+        if week == cur + 1:
+            opens = roles.section_week_start_local(sec, cur + 1)
+            await call.message.answer(
+                f"🚫 Сейчас идёт неделя {cur} раздела «{sec.name}».\n"
+                f"Неделю {week} пока сдать нельзя — она откроется только после того, "
+                f"как закончится неделя {cur} (после {roles.section_deadline_str(sec, cur)}).\n"
+                f"Тогда, с {opens.day:02d}.{opens.month:02d}, можно будет сдать неделю {week}.\n\n"
+                f"Сейчас сдавай неделю {cur} (текущую) или прошлые недели.")
+        else:
+            await call.message.answer(
+                f"🚫 Сейчас идёт неделя {cur} раздела «{sec.name}», а неделя {week} ещё не началась.\n"
+                "Недели открываются по очереди: пока не закончится текущая, следующую сдать нельзя.\n"
+                f"Сейчас можно сдать неделю {cur} или прошлые.")
         return
     if week == cur:
         await _go_photos(call.message, state, sec, week, sub_type)
@@ -492,11 +503,10 @@ async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
             reply_markup=student_menu(),
         )
 
-    # уведомление куратору + Google Sheets
+    # уведомление куратору + Google Sheets (живой журнал)
     await notifications.notify_submission(bot, sub.id)
-    status = f"просрочено +{late_min} мин" if is_late else "вовремя"
-    await sheets.append_submission(realname, group.name if group else "—",
-                                   roles.fmt_absolute(sub.submitted_at_utc), status)
+    await sheets.append_feed(sub.id)
+    await sheets.rebuild_journal()
 
     await state.clear()
 
@@ -558,17 +568,34 @@ async def my_works(message: Message, state: FSMContext):
         return
     student = await crud.get_student_by_tg(message.from_user.id)
     subs = await crud.get_submissions(student_id=student.id)
+    # только рабочие тетради (РТ), практику тут не показываем
+    subs = [s for s in subs if s.type != "practice"]
     if not subs:
-        await message.answer("📁 У тебя пока нет сданных работ.")
+        await message.answer(
+            "📁 У тебя пока нет сданных рабочих тетрадей.\n"
+            "Здесь будут только РТ (конспекты), сгруппированные по разделам.")
         return
-    lines = ["📁 Твои работы:\n"]
+
+    # группируем по разделу
+    by_section: dict[int, list] = {}
+    for s in subs:
+        by_section.setdefault(s.section_id or 0, []).append(s)
+
+    lines = ["📁 Твои рабочие тетради (по разделам):\n"]
     kb_rows = []
-    for i, sub in enumerate(reversed(subs), start=1):
-        mark = " ⚠️" if sub.is_late else ""
-        lines.append(f"   📤 РТ #{i} — {roles.fmt_absolute(sub.submitted_at_utc)}{mark}")
-        kb_rows.append([InlineKeyboardButton(
-            text=f"📂 Открыть РТ #{i}", callback_data=f"open_my:{sub.id}")])
-    await message.answer("\n".join(lines),
+    for sec_id, items in by_section.items():
+        sec = await crud.get_section(sec_id) if sec_id else None
+        sec_name = sec.name if sec else "Без раздела"
+        lines.append(f"📚 <b>{sec_name}</b>:")
+        for sub in sorted(items, key=lambda x: x.week or 0):
+            if sub.is_late:
+                lines.append(f"   ⚠️ Неделя {sub.week} — ПРОСРОЧЕНО · {roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+            else:
+                lines.append(f"   ✅ Неделя {sub.week} — вовремя · {roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+            kb_rows.append([InlineKeyboardButton(
+                text=f"📂 {sec_name} · Неделя {sub.week}", callback_data=f"open_my:{sub.id}")])
+        lines.append("")
+    await message.answer("\n".join(lines), parse_mode="HTML",
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 
@@ -582,4 +609,3 @@ async def open_my(call: CallbackQuery):
         await call.message.answer("❌ Файл не найден.")
         return
     await call.message.answer_document(sub.pdf_file_id)
-
