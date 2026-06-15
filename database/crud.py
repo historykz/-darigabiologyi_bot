@@ -261,12 +261,13 @@ async def add_students_bulk(items: list[dict], group_id: int, curator_id: int) -
 async def get_students(curator_id: int | None = None,
                        group_id: int | None = None) -> list[Student]:
     async with async_session() as s:
-        q = select(Student).where(Student.is_active == True)
+        q = select(Student).where(Student.is_active == True)  # noqa: E712
         if curator_id is not None:
             q = q.where(Student.curator_id == curator_id)
         if group_id is not None:
             q = q.where(Student.group_id == group_id)
-        return list((await s.scalars(q.order_by(Student.id))).all())
+        q = q.order_by(func.lower(Student.last_name), func.lower(Student.first_name))
+        return list((await s.scalars(q)).all())
 
 
 async def get_student(student_id: int) -> Student | None:
@@ -658,3 +659,4 @@ async def global_stats() -> dict:
         wbs = await s.scalar(select(func.count(Workbook.id)))
         return {"curators": curators or 0, "students": students or 0,
                 "groups": groups or 0, "submissions": subs or 0, "workbooks": wbs or 0}
+
