@@ -22,3 +22,4 @@ def send_pdf_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📄 Отправить в PDF", callback_data="student_make_pdf")
     ]])
 
+
