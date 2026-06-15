@@ -447,16 +447,25 @@ async def my_students(message: Message, state: FSMContext):
     if not groups:
         await message.answer("У тебя пока нет групп. Создай группу в «📂 Мои группы».")
         return
-    lines = ["👥 Мои ученики:\n"]
+    lines = ["👥 Мои ученики:",
+             "(⏳ — ещё не активировал бота, ему нужно нажать /start или зайти по ссылке)\n"]
+    not_active = 0
     for g in groups:
         sts = await crud.get_students(curator_id=message.from_user.id, group_id=g.id)
         lines.append(f"📂 {g.name} ({len(sts)} чел.)")
         for st in sts[:40]:
             uname = f" (@{st.username})" if st.username else ""
-            lines.append(f"   • {st.first_name} {st.last_name}{uname}")
+            mark = "" if st.user_id else " ⏳"
+            if not st.user_id:
+                not_active += 1
+            lines.append(f"   • {st.first_name} {st.last_name}{uname}{mark}")
         if len(sts) > 40:
             lines.append(f"   … и ещё {len(sts) - 40}")
         lines.append("")
+    if not_active:
+        lines.append(f"⏳ Не активировали бота: {not_active}. "
+                     "Им нужно один раз открыть бота (/start) или зайти по ссылке группы — "
+                     "после этого бот их узнаёт, и при обновлениях повторно делать ничего не нужно.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="➕ Добавить", callback_data="cur_add_open"),
         InlineKeyboardButton(text="➖ Удалить", callback_data="cur_del_menu"),
@@ -1542,4 +1551,3 @@ def _parse_contact(contact: str) -> tuple[str | None, int | None]:
 def _utc_to_local_hhmm(hhmm_utc: str) -> str:
     h, m = map(int, hhmm_utc.split(":"))
     return f"{(h + 5) % 24:02d}:{m:02d}"
-
