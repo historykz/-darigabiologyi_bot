@@ -75,10 +75,12 @@ async def restore(data: dict) -> dict:
                     existing.token = g["token"]
                 if "is_active" in g:
                     existing.is_active = g.get("is_active", True)
+                existing.hidden = g.get("hidden", False)
             else:
                 s.add(Group(id=g["id"], curator_id=g["curator_id"], name=g["name"],
                             token=g.get("token") or secrets.token_urlsafe(8),
                             is_active=g.get("is_active", True),
+                            hidden=g.get("hidden", False),
                             created_at=_dt(g.get("created_at"))))
             counts["groups"] += 1
 
