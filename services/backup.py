@@ -44,6 +44,7 @@ async def collect() -> dict:
             {"id": g.id, "curator_id": g.curator_id, "name": g.name,
              "token": getattr(g, "token", None),
              "is_active": getattr(g, "is_active", True),
+             "hidden": getattr(g, "hidden", False),
              "created_at": g.created_at.isoformat() if g.created_at else None}
             for g in groups
         ],
