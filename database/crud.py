@@ -170,12 +170,31 @@ async def ensure_default_deadline(curator_id: int) -> None:
                               reminders_enabled=True)
 
 
-async def get_groups(curator_id: int | None = None) -> list[Group]:
+async def get_groups(curator_id: int | None = None,
+                     include_hidden: bool = False,
+                     only_hidden: bool = False) -> list[Group]:
     async with async_session() as s:
         q = select(Group).where(Group.is_active == True)  # noqa: E712
         if curator_id is not None:
             q = q.where(Group.curator_id == curator_id)
+        if only_hidden:
+            q = q.where(Group.hidden == True)  # noqa: E712
+        elif not include_hidden:
+            q = q.where((Group.hidden == False) | (Group.hidden.is_(None)))  # noqa: E712
         return list((await s.scalars(q.order_by(Group.id))).all())
+
+
+async def set_group_hidden(group_id: int, hidden: bool) -> None:
+    async with async_session() as s:
+        await s.execute(update(Group).where(Group.id == group_id).values(hidden=hidden))
+        await s.commit()
+
+
+async def get_curators() -> list[User]:
+    """Список всех кураторов (по роли)."""
+    async with async_session() as s:
+        return list((await s.scalars(
+            select(User).where(User.role == "curator").order_by(User.first_name))).all())
 
 
 async def get_group(group_id: int) -> Group | None:
