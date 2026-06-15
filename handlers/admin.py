@@ -333,8 +333,9 @@ async def restore_file(message: Message, state: FSMContext, bot: Bot):
         f"   👨‍🏫 Кураторов: {summary['curators']}\n"
         f"   👥 Учеников: {summary['students']}\n"
         f"   📂 Групп: {summary['groups']}\n"
-        f"   📤 Работ: {summary['submissions']}\n"
-        f"   📚 Тетрадей: {summary['workbooks']}\n\n"
+        f"   📚 Разделов: {summary['sections']}\n"
+        f"   📤 Работ: {summary['submissions']} (из них 📷 практика: {summary['practice']})\n"
+        f"   📒 Тетрадей: {summary['workbooks']}\n\n"
         "Восстановить всё?",
         reply_markup=kb,
     )
@@ -351,10 +352,11 @@ async def restore_do(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.answer(
         "✅ Восстановление завершено!\n\n"
-        f"✅ {counts['curators']} кураторов восстановлены\n"
-        f"✅ {counts['students']} учеников восстановлены\n"
-        f"✅ {counts['groups']} групп восстановлены\n"
-        f"✅ {counts['submissions']} работ восстановлены\n\n"
+        f"✅ {counts['curators']} кураторов\n"
+        f"✅ {counts['students']} учеников\n"
+        f"✅ {counts['groups']} групп\n"
+        f"✅ {counts['sections']} разделов (с неделями и практиками)\n"
+        f"✅ {counts['submissions']} работ (конспекты и практика)\n\n"
         "Бот готов к работе. Кураторам и ученикам ничего делать не нужно — всё как было.",
         reply_markup=admin_menu(),
     )
