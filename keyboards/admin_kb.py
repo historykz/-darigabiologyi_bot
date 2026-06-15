@@ -44,3 +44,4 @@ def confirm(yes_cb: str, no_cb: str = "cancel") -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="✅ Да", callback_data=yes_cb),
         InlineKeyboardButton(text="❌ Отмена", callback_data=no_cb),
     ]])
+
