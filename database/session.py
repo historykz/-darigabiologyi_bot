@@ -37,6 +37,10 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN section_id INTEGER"))
         if "week" not in cols:
             sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN week INTEGER DEFAULT 0"))
+        if "pages" not in cols:
+            sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN pages INTEGER DEFAULT 0"))
+        if "deleted_by" not in cols:
+            sync_conn.execute(text("ALTER TABLE submissions ADD COLUMN deleted_by BIGINT"))
 
     if "sections" in tables:
         cols = {c["name"] for c in insp.get_columns("sections")}
