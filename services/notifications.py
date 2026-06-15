@@ -17,21 +17,33 @@ async def notify_submission(bot: Bot, sub_id: int) -> None:
     group_name = group.name if group else "—"
     realname = f"{student.first_name} {student.last_name}".strip() if student else sub.submitted_name
     sec = await crud.get_section(sub.section_id) if sub.section_id else None
-    sec_line = f"\n   Раздел: {sec.name} · Неделя {sub.week}" if sec else ""
+    is_prac = sub.type == "practice"
+    head = "📷 Новая практика!" if is_prac else "📤 Новая рабочая тетрадь!"
+    wk_label = f"Практика {sub.week}" if is_prac else f"Неделя {sub.week}"
+    sec_line = f"\n   Раздел: {sec.name} · {wk_label}" if sec else ""
 
     when = roles.fmt_relative(sub.submitted_at_utc)
     if sub.is_late:
+        mins = sub.late_by_minutes
+        if mins < 60:
+            late_txt = f"{mins} мин"
+        elif mins < 1440:
+            h, mm = divmod(mins, 60)
+            late_txt = f"{h} ч" + (f" {mm} мин" if mm else "")
+        else:
+            d, hh = divmod(mins // 60, 24)
+            late_txt = f"{d} дн" + (f" {hh} ч" if hh else "")
         text = (
-            "📤 Новая рабочая тетрадь! ⚠️\n"
+            f"{head} ⚠️ ПРОСРОЧЕНО\n"
             f"   Ученик: {realname}{sec_line}\n"
             f"   Файл: {sub.submitted_name}\n"
             f"   Группа: {group_name}\n"
             f"   Время: {roles.fmt_absolute(sub.submitted_at_utc)} ({when})\n"
-            f"   Просрочено: +{sub.late_by_minutes} мин"
+            f"   ⏰ Опоздание: +{late_txt}"
         )
     else:
         text = (
-            "📤 Новая рабочая тетрадь!\n"
+            f"{head}\n"
             f"   Ученик: {realname}{sec_line}\n"
             f"   Файл: {sub.submitted_name}\n"
             f"   Группа: {group_name}\n"
