@@ -37,6 +37,18 @@ def now_local() -> datetime:
     return datetime.now(TZ)
 
 
+def fmt_late(mins: int) -> str:
+    """Человеческое опоздание: мин / ч / дни."""
+    mins = int(mins or 0)
+    if mins < 60:
+        return f"{mins} мин"
+    h, mm = divmod(mins, 60)
+    if h < 24:
+        return f"{h} ч" + (f" {mm} мин" if mm else "")
+    d, hh = divmod(h, 24)
+    return f"{d} дн" + (f" {hh} ч" if hh else "")
+
+
 def _to_local_date(dt) -> datetime:
     """Любой datetime → локальная полночь (начало дня по Астане)."""
     if dt is None:
@@ -177,3 +189,4 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     if 1 < n1 < 5:
         return few
     return many
+
