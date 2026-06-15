@@ -78,6 +78,93 @@ async def get_group_by_token(token: str) -> Group | None:
         return (await s.scalars(select(Group).where(Group.token == token))).first()
 
 
+async def rename_group(group_id: int, name: str) -> None:
+    async with async_session() as s:
+        await s.execute(update(Group).where(Group.id == group_id).values(name=name))
+        await s.commit()
+
+
+async def regenerate_token(group_id: int) -> str:
+    """Меняет токен группы на новый (старая ссылка перестаёт работать)."""
+    new_token = secrets.token_urlsafe(8)
+    async with async_session() as s:
+        await s.execute(update(Group).where(Group.id == group_id).values(token=new_token))
+        await s.commit()
+    return new_token
+
+
+async def update_section(section_id: int, name: str | None = None,
+                         weeks: int | None = None, practices: int | None = None,
+                         start_date=None) -> None:
+    vals = {}
+    if name is not None:
+        vals["name"] = name
+    if weeks is not None:
+        vals["weeks"] = weeks
+    if practices is not None:
+        vals["practices"] = practices
+    if start_date is not None:
+        vals["start_date"] = start_date
+    if not vals:
+        return
+    async with async_session() as s:
+        await s.execute(update(Section).where(Section.id == section_id).values(**vals))
+        await s.commit()
+
+
+async def find_student_duplicate(curator_id: int, username: str | None,
+                                 user_id: int | None,
+                                 first: str | None = None,
+                                 last: str | None = None) -> Student | None:
+    """Ищет уже добавленного активного ученика (антидублирование).
+
+    По @username и Telegram ID — ГЛОБАЛЬНО (у любого куратора, в любой группе),
+    т.к. это точно тот же человек. По имени+фамилии — только у этого же куратора
+    (у разных кураторов могут учиться разные люди с одинаковыми именами).
+    """
+    async with async_session() as s:
+        # 1) надёжные идентификаторы — ищем по всем кураторам
+        gconds = []
+        if username:
+            gconds.append(func.coalesce(Student.username, "").ilike(username))
+        if user_id:
+            gconds.append(Student.user_id == user_id)
+        if gconds:
+            cond = gconds[0]
+            for c in gconds[1:]:
+                cond = cond | c
+            found = (await s.scalars(
+                select(Student).where(Student.is_active == True, cond).limit(1)  # noqa: E712
+            )).first()
+            if found:
+                return found
+        # 2) имя+фамилия — только в пределах текущего куратора
+        if first and last:
+            found = (await s.scalars(
+                select(Student).where(
+                    Student.is_active == True,  # noqa: E712
+                    Student.curator_id == curator_id,
+                    Student.first_name.ilike(first),
+                    Student.last_name.ilike(last),
+                ).limit(1)
+            )).first()
+            if found:
+                return found
+    return None
+
+
+async def curator_label(curator_id: int) -> str:
+    """Понятное имя куратора по его telegram_id: @username или Имя."""
+    async with async_session() as s:
+        u = (await s.scalars(select(User).where(User.telegram_id == curator_id))).first()
+    if not u:
+        return "другой куратор"
+    if u.username:
+        return f"@{u.username}"
+    name = f"{u.first_name or ''} {u.last_name or ''}".strip()
+    return name or "другой куратор"
+
+
 async def ensure_default_deadline(curator_id: int) -> None:
     existing = await get_deadline(curator_id)
     if existing is None:
@@ -368,9 +455,11 @@ async def has_submission(student_id: int, section_id: int, week: int, sub_type: 
 
 # ─── РАЗДЕЛЫ (предметы) ─────────────────────────────────────────
 
-async def create_section(group_id: int, curator_id: int, name: str, weeks: int) -> Section:
+async def create_section(group_id: int, curator_id: int, name: str, weeks: int,
+                         start_date=None) -> Section:
     async with async_session() as s:
-        sec = Section(group_id=group_id, curator_id=curator_id, name=name, weeks=weeks)
+        sec = Section(group_id=group_id, curator_id=curator_id, name=name, weeks=weeks,
+                      start_date=start_date)
         s.add(sec)
         await s.commit()
         await s.refresh(sec)
@@ -552,3 +641,4 @@ async def global_stats() -> dict:
         wbs = await s.scalar(select(func.count(Workbook.id)))
         return {"curators": curators or 0, "students": students or 0,
                 "groups": groups or 0, "submissions": subs or 0, "workbooks": wbs or 0}
+
