@@ -46,6 +46,10 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text("ALTER TABLE sections ADD COLUMN practices INTEGER DEFAULT 2"))
         if "start_date" not in cols:
             sync_conn.execute(text("ALTER TABLE sections ADD COLUMN start_date TIMESTAMP"))
+        if "period_days" not in cols:
+            sync_conn.execute(text("ALTER TABLE sections ADD COLUMN period_days INTEGER DEFAULT 7"))
+        if "end_date" not in cols:
+            sync_conn.execute(text("ALTER TABLE sections ADD COLUMN end_date TIMESTAMP"))
 
     if "groups" in tables:
         cols = {c["name"] for c in insp.get_columns("groups")}
@@ -75,4 +79,5 @@ def _ensure_columns(sync_conn) -> None:
             sync_conn.execute(text(
                 "ALTER TABLE students ADD COLUMN welcomed BOOLEAN DEFAULT FALSE"
             ))
+
 
