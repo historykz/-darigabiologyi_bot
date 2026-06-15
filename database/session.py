@@ -59,6 +59,8 @@ def _ensure_columns(sync_conn) -> None:
             ))
         if "token" not in cols:
             sync_conn.execute(text("ALTER TABLE groups ADD COLUMN token VARCHAR(32)"))
+        if "hidden" not in cols:
+            sync_conn.execute(text("ALTER TABLE groups ADD COLUMN hidden BOOLEAN DEFAULT FALSE"))
         # выдаём случайный код группам, у которых его ещё нет
         rows = sync_conn.execute(
             text("SELECT id FROM groups WHERE token IS NULL OR token = ''")
