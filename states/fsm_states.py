@@ -11,6 +11,7 @@ class AdminStates(StatesGroup):
     intro_video_wait = State()
     broadcast = State()
     add_students_for = State()
+    new_group_for = State()
 
 
 class CuratorStates(StatesGroup):
