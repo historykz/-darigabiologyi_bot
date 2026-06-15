@@ -51,7 +51,9 @@ async def collect() -> dict:
             {"id": sec.id, "group_id": sec.group_id, "curator_id": sec.curator_id,
              "name": sec.name, "weeks": sec.weeks,
              "practices": getattr(sec, "practices", 2),
+             "period_days": getattr(sec, "period_days", 7),
              "start_date": sec.start_date.isoformat() if getattr(sec, "start_date", None) else None,
+             "end_date": sec.end_date.isoformat() if getattr(sec, "end_date", None) else None,
              "is_active": sec.is_active, "deleted": getattr(sec, "deleted", False),
              "ended_notified": getattr(sec, "ended_notified", False),
              "created_at": sec.created_at.isoformat() if sec.created_at else None}
