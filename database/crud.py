@@ -356,10 +356,12 @@ async def search_students(curator_id: int, query: str) -> list[Student]:
         )).all())
 
 
-async def broadcast_targets(curator_id: int | None = None) -> list[int]:
+async def broadcast_targets(curator_id: int | None = None,
+                            group_id: int | None = None) -> list[int]:
     """user_id учеников, которым можно написать (они уже запускали бота).
 
     curator_id=None → все ученики системы (для админа).
+    group_id задан → только ученики этой группы.
     """
     async with async_session() as s:
         q = select(Student.user_id).where(
@@ -368,6 +370,8 @@ async def broadcast_targets(curator_id: int | None = None) -> list[int]:
         )
         if curator_id is not None:
             q = q.where(Student.curator_id == curator_id)
+        if group_id is not None:
+            q = q.where(Student.group_id == group_id)
         return [uid for uid in (await s.scalars(q)).all() if uid]
 
 
@@ -419,12 +423,13 @@ async def get_workbook_by_serial(serial: int) -> Workbook | None:
 async def add_submission(student_id: int, pdf_file_id: str, submitted_name: str,
                          curator_id: int, section_id: int | None = None, week: int = 0,
                          sub_type: str = "workbook",
-                         is_late: bool = False, late_by_minutes: int = 0) -> Submission:
+                         is_late: bool = False, late_by_minutes: int = 0,
+                         pages: int = 0) -> Submission:
     async with async_session() as s:
         sub = Submission(student_id=student_id, pdf_file_id=pdf_file_id,
                          submitted_name=submitted_name, curator_id=curator_id,
                          section_id=section_id, week=week, type=sub_type,
-                         is_late=is_late, late_by_minutes=late_by_minutes)
+                         is_late=is_late, late_by_minutes=late_by_minutes, pages=pages)
         s.add(sub)
         await s.commit()
         await s.refresh(sub)
@@ -659,4 +664,3 @@ async def global_stats() -> dict:
         wbs = await s.scalar(select(func.count(Workbook.id)))
         return {"curators": curators or 0, "students": students or 0,
                 "groups": groups or 0, "submissions": subs or 0, "workbooks": wbs or 0}
-
