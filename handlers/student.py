@@ -187,18 +187,22 @@ async def _ask_week(target, state: FSMContext, section, sub_type: str):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         return
+    total = roles.section_total_weeks(section)
+    cur = roles.section_current_week(section)
     rows, row = [], []
-    for w in range(1, section.weeks + 1):
-        row.append(InlineKeyboardButton(text=f"Неделя {w}", callback_data=f"sub_wk:{w}"))
-        if len(row) == 3:
+    for w in range(1, total + 1):
+        rng = roles.section_week_range_str(section, w)
+        is_cur = " ◀" if w == cur else ""
+        row.append(InlineKeyboardButton(text=f"Нед.{w}: {rng}{is_cur}", callback_data=f"sub_wk:{w}"))
+        if len(row) == 2:
             rows.append(row); row = []
     if row:
         rows.append(row)
     await state.set_state(StudentStates.submit_pick_week)
+    cur_txt = f"(сейчас идёт неделя {cur})" if 1 <= cur <= total else ""
     await target.answer(
-        f"<b>Шаг 2 — За какую неделю раздела «{html.escape(section.name)}»?</b>\n"
-        "Неделя — это номер учебной недели в этом предмете.\n"
-        "Если сдаёшь задание первой недели — жми «Неделя 1» 👇",
+        f"<b>Шаг 2 — За какую неделю «{html.escape(section.name)}»?</b> {cur_txt}\n"
+        "На кнопке — диапазон дат. За текущую — вовремя. За прошлую — просрочка. За будущую — нельзя 👇",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -225,19 +229,22 @@ async def submit_name(message: Message, state: FSMContext):
         await message.answer("❌ Раздел не найден, начни заново.")
         await state.clear()
         return
-    rows = []
-    row = []
-    for w in range(1, sec.weeks + 1):
-        row.append(InlineKeyboardButton(text=f"Неделя {w}", callback_data=f"sub_wk:{w}"))
-        if len(row) == 3:
+    total2 = roles.section_total_weeks(sec)
+    cur2 = roles.section_current_week(sec)
+    rows = []; row = []
+    for w in range(1, total2 + 1):
+        rng = roles.section_week_range_str(sec, w)
+        is_cur = " ◀" if w == cur2 else ""
+        row.append(InlineKeyboardButton(text=f"Нед.{w}: {rng}{is_cur}", callback_data=f"sub_wk:{w}"))
+        if len(row) == 2:
             rows.append(row); row = []
     if row:
         rows.append(row)
     await state.set_state(StudentStates.submit_pick_week)
     await message.answer(f"✅ Название принято: <b>{html.escape(fname)}</b>", parse_mode="HTML")
     await message.answer(
-        f"<b>Шаг 2 — За какую неделю раздела «{html.escape(sec.name)}»?</b>\n"
-        "Выбери неделю 👇",
+        f"<b>Шаг 2 — За какую неделю «{html.escape(sec.name)}»?</b>\n"
+        "На кнопке — диапазон дат. ◀ — текущая неделя 👇",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
@@ -338,6 +345,50 @@ async def _go_photos(target, state: FSMContext, sec, week: int, sub_type: str):
         "\u2022 Хорошее освещение\n\u2022 Телефон ровно над листом\n\u2022 Текст читаем\n\n"
         "Когда все страницы отправлены \u2014 нажми кнопку \u00ab\U0001f4c4 Отправить в PDF\u00bb, "
         "и я соберу их в один файл и сам отправлю куратору.")
+
+
+@router.message(StudentStates.submit_photos, F.photo)
+async def collect_photo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(photos=photos)
+    await message.answer(
+        f"📸 Принято фото №{len(photos)}.\n"
+        "Шли ещё страницы или нажми «📄 Отправить в PDF».",
+        reply_markup=send_pdf_kb())
+
+
+@router.message(StudentStates.submit_photos, F.document)
+async def collect_photo_doc(message: Message, state: FSMContext):
+    """Картинка, отправленная как файл (без сжатия) — тоже принимаем."""
+    doc = message.document
+    mime = (doc.mime_type or "").lower()
+    if mime.startswith("image/"):
+        data = await state.get_data()
+        photos = data.get("photos", [])
+        photos.append(doc.file_id)
+        await state.update_data(photos=photos)
+        await message.answer(
+            f"📸 Принято фото №{len(photos)} (файлом).\n"
+            "Шли ещё или нажми «📄 Отправить в PDF».",
+            reply_markup=send_pdf_kb())
+    else:
+        await message.answer(
+            "❗ Это не картинка. Пришли снимок экрана или фото страницы "
+            "(обычным изображением). PDF-файлы прикреплять не нужно — я сам соберу PDF из фото.",
+            reply_markup=send_pdf_kb())
+
+
+@router.message(StudentStates.submit_photos)
+async def submit_photos_hint(message: Message, state: FSMContext):
+    """Любое другое сообщение в режиме сбора фото — мягкая подсказка, не «не понял команду»."""
+    data = await state.get_data()
+    n = len(data.get("photos", []))
+    await message.answer(
+        f"📸 Жду фото/снимки экрана. Сейчас принято: {n}.\n"
+        "Пришли изображение или нажми «📄 Отправить в PDF» 👇",
+        reply_markup=send_pdf_kb())
 
 
 @router.callback_query(StudentStates.submit_photos, F.data == "student_make_pdf")
@@ -531,3 +582,4 @@ async def open_my(call: CallbackQuery):
         await call.message.answer("❌ Файл не найден.")
         return
     await call.message.answer_document(sub.pdf_file_id)
+
