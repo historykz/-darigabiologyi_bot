@@ -77,6 +77,25 @@ async def join_enter_name(message: Message, state: FSMContext, bot: Bot):
     first = parts[0]
     last = parts[1] if len(parts) > 1 else ""
 
+    # антидублирование: этот человек уже записан (у любого куратора)?
+    dup = await crud.find_student_duplicate(group.curator_id, tg.username, tg.id)
+    if dup:
+        dg = await crud.get_group(dup.group_id)
+        gname = dg.name if dg else "—"
+        if dup.curator_id == group.curator_id:
+            await message.answer(
+                f"⚠️ Ты уже записан(а) у этого куратора — группа «{gname}».\n"
+                "Второй раз записываться не нужно. Пользуйся меню 👇",
+                reply_markup=student_menu())
+        else:
+            who = await crud.curator_label(dup.curator_id)
+            await message.answer(
+                f"⚠️ Ты уже записан(а) у куратора {who} — группа «{gname}».\n"
+                "Если хочешь перейти к другому куратору — попроси удалить тебя из старой группы.\n"
+                "Пока пользуйся меню 👇",
+                reply_markup=student_menu())
+        return
+
     await crud.upsert_user(tg.id, tg.username, tg.first_name, tg.last_name)
     st = await crud.add_student(first_name=first, last_name=last, username=tg.username,
                                 user_id=tg.id, group_id=gid, curator_id=group.curator_id)
