@@ -13,3 +13,4 @@ class RoleFilter(BaseFilter):
         uid = event.from_user.id
         return (await roles.get_role(uid)) == self.role
 
+
