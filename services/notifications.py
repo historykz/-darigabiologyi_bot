@@ -37,6 +37,7 @@ async def notify_submission(bot: Bot, sub_id: int) -> None:
             f"{head} ⚠️ ПРОСРОЧЕНО\n"
             f"   Ученик: {realname}{sec_line}\n"
             f"   Файл: {sub.submitted_name}\n"
+            f"   Страниц: {getattr(sub, 'pages', 0)}\n"
             f"   Группа: {group_name}\n"
             f"   Время: {roles.fmt_absolute(sub.submitted_at_utc)} ({when})\n"
             f"   ⏰ Опоздание: +{late_txt}"
@@ -46,6 +47,7 @@ async def notify_submission(bot: Bot, sub_id: int) -> None:
             f"{head}\n"
             f"   Ученик: {realname}{sec_line}\n"
             f"   Файл: {sub.submitted_name}\n"
+            f"   Страниц: {getattr(sub, 'pages', 0)}\n"
             f"   Группа: {group_name}\n"
             f"   Время: {roles.fmt_absolute(sub.submitted_at_utc)} ({when})"
         )
