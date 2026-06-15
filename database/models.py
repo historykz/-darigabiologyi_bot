@@ -102,6 +102,7 @@ class Submission(Base):
     type: Mapped[str] = mapped_column(String(32), default="workbook")
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id"), nullable=True, index=True)
     week: Mapped[int] = mapped_column(Integer, default=0)
+    pages: Mapped[int] = mapped_column(Integer, default=0)  # сколько страниц/фото
     pdf_file_id: Mapped[str] = mapped_column(Text)
     submitted_name: Mapped[str] = mapped_column(String(256))
     submitted_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
