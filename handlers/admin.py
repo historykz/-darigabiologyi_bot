@@ -112,14 +112,16 @@ async def curator_students_list(call: CallbackQuery):
     if not groups:
         await call.message.answer("У этого куратора пока нет групп.")
         return
-    lines = ["👥 Ученики куратора по группам:\n"]
+    lines = ["👥 Ученики куратора по группам:",
+             "(⏳ — ещё не активировал бота)\n"]
     for g in groups:
         studs = await crud.get_students(curator_id=tg_id, group_id=g.id)
         tag = " 🗄(архив)" if getattr(g, "hidden", False) else ""
         lines.append(f"📂 <b>{g.name}</b>{tag} — {len(studs)} уч.")
         for st in studs:
             uname = f" (@{st.username})" if st.username else ""
-            lines.append(f"   • {st.first_name} {st.last_name}{uname}")
+            mark = "" if st.user_id else " ⏳"
+            lines.append(f"   • {st.first_name} {st.last_name}{uname}{mark}")
         lines.append("")
     await call.message.answer("\n".join(lines)[:4000], parse_mode="HTML")
 
@@ -651,4 +653,3 @@ async def admin_broadcast_do(message: Message, state: FSMContext, bot: Bot):
         except Exception:
             pass
     await message.answer(f"✅ Отправлено: {sent} из {len(targets)} учеников.")
-
