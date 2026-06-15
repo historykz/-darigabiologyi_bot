@@ -95,18 +95,16 @@ async def regenerate_token(group_id: int) -> str:
 
 async def update_section(section_id: int, name: str | None = None,
                          weeks: int | None = None, practices: int | None = None,
-                         start_date=None) -> None:
+                         start_date=None, end_date=None,
+                         period_days: int | None = None) -> None:
     vals = {}
-    if name is not None:
-        vals["name"] = name
-    if weeks is not None:
-        vals["weeks"] = weeks
-    if practices is not None:
-        vals["practices"] = practices
-    if start_date is not None:
-        vals["start_date"] = start_date
-    if not vals:
-        return
+    if name is not None: vals["name"] = name
+    if weeks is not None: vals["weeks"] = weeks
+    if practices is not None: vals["practices"] = practices
+    if start_date is not None: vals["start_date"] = start_date
+    if end_date is not None: vals["end_date"] = end_date
+    if period_days is not None: vals["period_days"] = period_days
+    if not vals: return
     async with async_session() as s:
         await s.execute(update(Section).where(Section.id == section_id).values(**vals))
         await s.commit()
@@ -455,11 +453,11 @@ async def has_submission(student_id: int, section_id: int, week: int, sub_type: 
 
 # ─── РАЗДЕЛЫ (предметы) ─────────────────────────────────────────
 
-async def create_section(group_id: int, curator_id: int, name: str, weeks: int,
-                         start_date=None) -> Section:
+async def create_section(group_id: int, curator_id: int, name: str, weeks: int = 4,
+                         start_date=None, end_date=None, period_days: int = 7) -> Section:
     async with async_session() as s:
         sec = Section(group_id=group_id, curator_id=curator_id, name=name, weeks=weeks,
-                      start_date=start_date)
+                      start_date=start_date, end_date=end_date, period_days=period_days)
         s.add(sec)
         await s.commit()
         await s.refresh(sec)
@@ -641,4 +639,3 @@ async def global_stats() -> dict:
         wbs = await s.scalar(select(func.count(Workbook.id)))
         return {"curators": curators or 0, "students": students or 0,
                 "groups": groups or 0, "submissions": subs or 0, "workbooks": wbs or 0}
-
