@@ -12,3 +12,4 @@ class RoleFilter(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
         uid = event.from_user.id
         return (await roles.get_role(uid)) == self.role
+
