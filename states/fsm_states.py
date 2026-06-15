@@ -10,6 +10,7 @@ class AdminStates(StatesGroup):
     gsheet_wait_url = State()
     intro_video_wait = State()
     broadcast = State()
+    add_students_for = State()
 
 
 class CuratorStates(StatesGroup):
@@ -25,8 +26,8 @@ class CuratorStates(StatesGroup):
     broadcast = State()
     new_section_name = State()
     new_section_period = State()
+    new_section_count = State()
     new_section_start = State()
-    new_section_end = State()
     rename_group = State()
     sec_rename = State()
     sec_setdate = State()
