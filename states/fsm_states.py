@@ -25,6 +25,10 @@ class CuratorStates(StatesGroup):
     broadcast = State()
     new_section_name = State()
     new_section_weeks = State()
+    new_section_start = State()
+    rename_group = State()
+    sec_rename = State()
+    sec_setdate = State()
 
 
 class StudentStates(StatesGroup):
