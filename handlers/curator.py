@@ -54,54 +54,17 @@ WEEKDAYS = ["понедельник", "вторник", "среда", "четв�
 async def my_groups(message: Message, state: FSMContext):
     await state.clear()
     groups = await crud.get_groups(curator_id=message.from_user.id)
-    hidden = await crud.get_groups(curator_id=message.from_user.id, only_hidden=True)
     lines = ["📂 Твои группы. Нажми на группу, чтобы открыть её настройки:",
-             "(там ссылка для учеников, разделы, переименование, выгрузка, скрытие)\n"]
+             "(там ссылка для учеников, разделы, переименование, выгрузка, удаление)\n"]
     rows = []
     for i, g in enumerate(groups, start=1):
         n = await crud.count_students(g.id)
         lines.append(f"   {i}. {g.name} — {n} учеников")
         rows.append([InlineKeyboardButton(text=f"⚙️ {g.name}", callback_data=f"cur_grp:{g.id}")])
     if not groups:
-        lines.append("   (активных групп нет — создай новую кнопкой ниже)")
+        lines.append("   (пока нет групп — создай первую кнопкой ниже)")
     rows.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="cur_new_group")])
-    if hidden:
-        rows.append([InlineKeyboardButton(text=f"🗄 Скрытые группы ({len(hidden)})",
-                                          callback_data="cur_hidden")])
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-
-@router.callback_query(F.data == "cur_hidden")
-async def hidden_groups(call: CallbackQuery):
-    await call.answer()
-    hidden = await crud.get_groups(curator_id=call.from_user.id, only_hidden=True)
-    if not hidden:
-        await call.message.answer("🗄 Скрытых групп нет.")
-        return
-    rows = []
-    lines = ["🗄 Скрытые группы (архив).",
-             "Эти группы не мешают в основном списке. Можно вернуть в любой момент.\n"]
-    for g in hidden:
-        n = await crud.count_students(g.id)
-        lines.append(f"   • {g.name} — {n} учеников")
-        rows.append([
-            InlineKeyboardButton(text=f"↩️ Вернуть «{g.name}»", callback_data=f"cur_unhide:{g.id}"),
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cur_delgrp:{g.id}"),
-        ])
-    await call.message.answer("\n".join(lines),
-                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-
-@router.callback_query(F.data.startswith("cur_unhide:"))
-async def unhide_group(call: CallbackQuery):
-    await call.answer()
-    gid = int(call.data.split(":")[1])
-    g = await crud.get_group(gid)
-    if not g or g.curator_id != call.from_user.id:
-        await call.message.answer("❌ Группа не найдена.")
-        return
-    await crud.set_group_hidden(gid, False)
-    await call.message.answer(f"↩️ Группа «{g.name}» возвращена в основной список «📂 Мои группы».")
 
 
 @router.callback_query(F.data.startswith("cur_grp:"))
@@ -120,7 +83,6 @@ async def group_settings(call: CallbackQuery):
         [InlineKeyboardButton(text="📚 Разделы (название/недели)", callback_data=f"cur_secs:{gid}")],
         [InlineKeyboardButton(text="✏️ Переименовать группу", callback_data=f"cur_ren:{gid}")],
         [InlineKeyboardButton(text="📦 Выгрузить работы", callback_data=f"cur_export:{gid}")],
-        [InlineKeyboardButton(text="🗄 Скрыть группу (в архив)", callback_data=f"cur_hide:{gid}")],
         [InlineKeyboardButton(text="🗑 Удалить группу", callback_data=f"cur_delgrp:{gid}")],
     ])
     await call.message.answer(
@@ -133,24 +95,8 @@ async def group_settings(call: CallbackQuery):
         "число недель РТ или количество практик.\n"
         "✏️ Переименовать — изменить название группы.\n"
         "📦 Выгрузить — получить Excel и все PDF работ.\n"
-        "🗄 Скрыть — убрать группу из списка в архив (данные не удаляются, можно вернуть).\n"
         "🗑 Удалить — убрать группу со всеми учениками (история сохранится).",
         reply_markup=kb)
-
-
-@router.callback_query(F.data.startswith("cur_hide:"))
-async def hide_group(call: CallbackQuery):
-    await call.answer()
-    gid = int(call.data.split(":")[1])
-    g = await crud.get_group(gid)
-    if not g or g.curator_id != call.from_user.id:
-        await call.message.answer("❌ Группа не найдена.")
-        return
-    await crud.set_group_hidden(gid, True)
-    await call.message.answer(
-        f"🗄 Группа «{g.name}» скрыта и перемещена в архив.\n"
-        "Она пропала из основного списка, но НЕ удалена — ученики и работы на месте.\n"
-        "Найти и вернуть её можно в «📂 Мои группы → 🗄 Скрытые группы».")
 
 
 # ── переименование группы ──
@@ -1109,17 +1055,14 @@ async def add_section_name(message: Message, state: FSMContext):
     await state.update_data(sec_name=message.text.strip())
     await state.set_state(CuratorStates.new_section_period)
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="7 дней (1 неделя)", callback_data="cur_secper:7"),
-        InlineKeyboardButton(text="14 дней (2 недели)", callback_data="cur_secper:14"),
+        InlineKeyboardButton(text="1 неделя (7 дней)", callback_data="cur_secper:7"),
+        InlineKeyboardButton(text="2 недели (14 дней)", callback_data="cur_secper:14"),
     ]])
     await message.answer(
-        f"\u2705 Название принято: «{message.text.strip()}»\n\n"
-        "\U0001f4d8 <b>ШАГ 2 из 4 — длительность одной недели</b>\n\n"
-        "Раздел делится на «недели» (периоды). Сколько дней длится ОДНА такая неделя?\n\n"
-        "Пример: «Ботаника 1» идёт 7 дней, потом «Ботаника 2» — ещё 7 дней, и так далее.\n"
-        "Или каждая тема длится 14 дней (2 недели).\n\n"
-        "Нажми на кнопку 👇",
-        parse_mode="HTML", reply_markup=kb)
+        "Сколько дней длится одна неделя (один период) этого раздела?\n\n"
+        "Например: ботаника 1 — 7 дней, потом ботаника 2 — ещё 7 дней.\n"
+        "Или каждая тема — 14 дней (2 недели) 👇",
+        reply_markup=kb)
 
 
 def _local_midnight(d) -> datetime:
@@ -1133,63 +1076,19 @@ async def add_section_period(call: CallbackQuery, state: FSMContext):
     await call.answer()
     period = int(call.data.split(":")[1])
     await state.update_data(sec_period=period)
-    await state.set_state(CuratorStates.new_section_count)
-    unit = "недель" if period == 7 else "периодов по 2 недели"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="4 недели (≈ месяц)", callback_data="cur_seccnt:4"),
-         InlineKeyboardButton(text="2 недели", callback_data="cur_seccnt:2")],
-        [InlineKeyboardButton(text="✍️ Указать другое число", callback_data="cur_seccnt:manual")],
-    ])
-    await call.message.answer(
-        f"\u2705 Одна неделя = {period} дней.\n\n"
-        "\U0001f4d8 <b>ШАГ 3 из 4 — сколько всего недель идёт раздел?</b>\n\n"
-        "Это весь срок предмета. Например, если раздел длится месяц — это 4 недели "
-        "(Ботаника 1, 2, 3, 4).\n\n"
-        "Выбери кнопкой или нажми «Указать другое число» и напиши, например: 6 👇",
-        parse_mode="HTML", reply_markup=kb)
+    await _ask_section_start(call.message, state, period)
 
 
-@router.callback_query(CuratorStates.new_section_count, F.data.startswith("cur_seccnt:"))
-async def add_section_count(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-    val = call.data.split(":")[1]
-    if val == "manual":
-        await call.message.answer(
-            "✍️ Напиши число — сколько всего недель идёт раздел (например 6):")
-        return
-    await state.update_data(sec_weeks=int(val))
-    await _ask_section_start(call.message, state)
-
-
-@router.message(CuratorStates.new_section_count, F.text.regexp(r"^\d{1,2}$"))
-async def add_section_count_text(message: Message, state: FSMContext):
-    weeks = max(1, min(30, int(message.text)))
-    await state.update_data(sec_weeks=weeks)
-    await _ask_section_start(message, state)
-
-
-@router.message(CuratorStates.new_section_count, F.text)
-async def add_section_count_bad(message: Message, state: FSMContext):
-    await message.answer("❌ Нужно просто число, например 4. Сколько недель идёт раздел?")
-
-
-async def _ask_section_start(target, state: FSMContext):
+async def _ask_section_start(target, state: FSMContext, period: int):
     await state.set_state(CuratorStates.new_section_start)
-    data = await state.get_data()
-    weeks = data.get("sec_weeks", 4)
-    period = data.get("sec_period", 7)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📆 Сегодня", callback_data="cur_secstart:today"),
          InlineKeyboardButton(text="📆 Завтра", callback_data="cur_secstart:tomorrow")],
-        [InlineKeyboardButton(text="📆 С ближайшего понедельника", callback_data="cur_secstart:monday")],
+        [InlineKeyboardButton(text="📆 С понедельника", callback_data="cur_secstart:monday")],
     ])
     await target.answer(
-        f"\u2705 Раздел будет идти {weeks} нед. по {period} дн.\n\n"
-        "\U0001f4d8 <b>ШАГ 4 из 4 — с какого числа стартует раздел?</b>\n\n"
-        "От этого дня пойдёт отсчёт. Неделя 1 начнётся в этот день, через "
-        f"{period} дн. она закроется и начнётся неделя 2, и так далее.\n"
-        "Конечную дату бот посчитает сам.\n\n"
-        "Выбери кнопкой или напиши дату: <b>ДД.ММ.ГГГГ</b> (например 01.06.2025) 👇",
+        f"📆 Шаг 2 — С какого числа начинается раздел?\n"
+        f"Выбери кнопкой или напиши дату: <b>ДД.ММ.ГГГГ</b> (например 01.06.2025) 👇",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -1204,7 +1103,8 @@ async def add_section_start_btn(call: CallbackQuery, state: FSMContext):
         d = today + timedelta(days=1)
     else:
         d = today + timedelta(days=(0 - today.weekday()) % 7)
-    await _finish_create_section(call.message, state, call.from_user.id, d)
+    await state.update_data(sec_start=_local_midnight(d))
+    await _ask_section_end(call.message, state, d)
 
 
 @router.message(CuratorStates.new_section_start, F.text)
@@ -1213,19 +1113,62 @@ async def add_section_start_text(message: Message, state: FSMContext):
     if not d:
         await message.answer("❌ Не понял дату. Напиши ДД.ММ.ГГГГ, например 01.06.2025.")
         return
-    await _finish_create_section(message, state, message.from_user.id, d)
+    await state.update_data(sec_start=_local_midnight(d))
+    await _ask_section_end(message, state, d)
 
 
-async def _finish_create_section(target, state: FSMContext, curator_id: int, start_d):
+async def _ask_section_end(target, state: FSMContext, start_d):
+    await state.set_state(CuratorStates.new_section_end)
+    data = await state.get_data()
+    period = data.get("sec_period", 7)
+    from datetime import date as date_cls
+    # предлагаем через 1, 2, 4 периода
+    opts = []
+    for n in (1, 2, 4):
+        end_d = start_d + timedelta(days=period * n - 1)
+        lbl = f"до {end_d.day:02d}.{end_d.month:02d} ({n} нед.)"
+        opts.append(InlineKeyboardButton(text=lbl, callback_data=f"cur_secend:{end_d.strftime('%d.%m.%Y')}"))
+    rows = [opts[:2], [opts[2]]]
+    await target.answer(
+        "📆 Шаг 3 — До какого числа идёт раздел (общий дедлайн)? \n\n"
+        "Это конец последней недели — после этого числа сдать будет нельзя (только как просрочку).\n"
+        "Выбери кнопкой или напиши дату: <b>ДД.ММ.ГГГГ</b> 👇",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(CuratorStates.new_section_end, F.data.startswith("cur_secend:"))
+async def add_section_end_btn(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    d = _parse_date(call.data.split(":")[1])
+    await _finish_create_section(call.message, state, call.from_user.id,
+                                  _local_midnight(d).replace(hour=23, minute=59))
+
+
+@router.message(CuratorStates.new_section_end, F.text)
+async def add_section_end_text(message: Message, state: FSMContext):
+    d = _parse_date(message.text)
+    if not d:
+        await message.answer("❌ Не понял дату. Напиши ДД.ММ.ГГГГ, например 30.06.2025.")
+        return
+    await _finish_create_section(message, state, message.from_user.id,
+                                  _local_midnight(d).replace(hour=23, minute=59))
+
+
+async def _finish_create_section(target, state: FSMContext, curator_id: int, end_dt):
     data = await state.get_data()
     gid = data["sec_gid"]
+    start_dt = data.get("sec_start")
     period = data.get("sec_period", 7)
-    weeks = data.get("sec_weeks", 4)
     name = data.get("sec_name", "Раздел")
-    start_dt = _local_midnight(start_d)
-    # конец = старт + weeks*period дней − 1 день, 23:59 локально
-    end_local_date = start_d + timedelta(days=period * weeks - 1)
-    end_dt = _local_midnight(end_local_date).replace(hour=23, minute=59)
+    # считаем число недель из дат
+    if start_dt:
+        from_dt = start_dt if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+        to_dt = end_dt if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+        total_days = max(period, (to_dt - from_dt).days + 1)
+        weeks = max(1, (total_days + period - 1) // period)
+    else:
+        weeks = 4
     sec = await crud.create_section(gid, curator_id, name, weeks,
                                      start_date=start_dt, end_date=end_dt,
                                      period_days=period)
@@ -1233,24 +1176,14 @@ async def _finish_create_section(target, state: FSMContext, curator_id: int, sta
     g = await crud.get_group(gid)
     total = roles.section_total_weeks(sec)
     lines = [
-        f"\u2705 Раздел «{sec.name}» создан в группе «{g.name}»!",
-        "",
-        f"\U0001f4c6 Начало: {roles.section_start_str(sec)}",
-        f"\U0001f3c1 Конец: {roles.section_end_str(sec)}",
-        f"\u23f1 Одна неделя = {period} дн. · Всего недель: {total}",
-        "",
-        "\U0001f5d3 <b>Расписание недель:</b>",
+        f"✅ Раздел «{sec.name}» создан в группе «{g.name}».",
+        f"📆 Начало: {roles.section_start_str(sec)} · Конец: {roles.section_end_str(sec)}",
+        f"⏱ Период: {period} дней · Недель: {total}",
     ]
     for w in range(1, total + 1):
-        lines.append(f"   • Неделя {w}: {roles.section_week_range_str(sec, w)} → дедлайн {roles.section_deadline_str(sec, w)}")
-    lines += [
-        "",
-        "Как это работает для учеников:",
-        "• сейчас идёт только текущая неделя — её сдают вовремя;",
-        "• следующая неделя откроется, только когда закончится текущая;",
-        "• за прошлую неделю можно сдать, но бот пометит как просрочку.",
-    ]
-    await target.answer("\n".join(lines), parse_mode="HTML")
+        lines.append(f"   Неделя {w}: {roles.section_week_range_str(sec, w)} → до {roles.section_deadline_str(sec, w)}")
+    lines.append("\nУченики увидят только текущую неделю как «вовремя». За будущую — блок, за прошлую — подтверждение + просрочка.")
+    await target.answer("\n".join(lines))
 
 
 # ── Excel по разделу ──
@@ -1542,4 +1475,5 @@ def _parse_contact(contact: str) -> tuple[str | None, int | None]:
 def _utc_to_local_hhmm(hhmm_utc: str) -> str:
     h, m = map(int, hhmm_utc.split(":"))
     return f"{(h + 5) % 24:02d}:{m:02d}"
+
 
