@@ -1,5 +1,6 @@
 """Хэндлеры куратора: группы, ученики, кто сдал, дедлайн, тетради, удаление."""
 import re
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
@@ -20,6 +21,24 @@ from keyboards.curator_kb import (
     weekdays_kb,
 )
 from services import notifications, roles
+from config import TZ as TZ_ASTANA
+
+
+def _parse_date(text: str):
+    """Парсит ДД.ММ.ГГГГ или ДД.ММ (текущий год). Возвращает date или None."""
+    import re as _re
+    from datetime import date
+    s = text.strip().replace("/", ".").replace("-", ".")
+    m = _re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$", s)
+    if not m:
+        return None
+    d, mo = int(m.group(1)), int(m.group(2))
+    y = m.group(3)
+    year = roles.now_local().year if not y else (2000 + int(y) if len(y) == 2 else int(y))
+    try:
+        return date(year, mo, d)
+    except ValueError:
+        return None
 from states.fsm_states import CuratorStates
 
 router = Router()
@@ -35,19 +54,243 @@ WEEKDAYS = ["понедельник", "вторник", "среда", "четв�
 async def my_groups(message: Message, state: FSMContext):
     await state.clear()
     groups = await crud.get_groups(curator_id=message.from_user.id)
-    lines = ["📂 Мои группы:"]
+    lines = ["📂 Твои группы. Нажми на группу, чтобы открыть её настройки:",
+             "(там ссылка для учеников, разделы, переименование, выгрузка, удаление)\n"]
     rows = []
     for i, g in enumerate(groups, start=1):
         n = await crud.count_students(g.id)
         lines.append(f"   {i}. {g.name} — {n} учеников")
-        rows.append([
-            InlineKeyboardButton(text=f"🔗 Ссылка «{g.name}»", callback_data=f"cur_link:{g.id}"),
-            InlineKeyboardButton(text="📦 Выгрузить", callback_data=f"cur_export:{g.id}"),
-        ])
+        rows.append([InlineKeyboardButton(text=f"⚙️ {g.name}", callback_data=f"cur_grp:{g.id}")])
     if not groups:
-        lines.append("   (пока нет групп)")
+        lines.append("   (пока нет групп — создай первую кнопкой ниже)")
     rows.append([InlineKeyboardButton(text="➕ Создать новую группу", callback_data="cur_new_group")])
     await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_grp:"))
+async def group_settings(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    n = await crud.count_students(gid)
+    secs = await crud.get_sections(gid)
+    sec_names = ", ".join(s.name for s in secs) if secs else "пока нет"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Ссылка для учеников", callback_data=f"cur_link:{gid}")],
+        [InlineKeyboardButton(text="📚 Разделы (название/недели)", callback_data=f"cur_secs:{gid}")],
+        [InlineKeyboardButton(text="✏️ Переименовать группу", callback_data=f"cur_ren:{gid}")],
+        [InlineKeyboardButton(text="📦 Выгрузить работы", callback_data=f"cur_export:{gid}")],
+        [InlineKeyboardButton(text="🗑 Удалить группу", callback_data=f"cur_delgrp:{gid}")],
+    ])
+    await call.message.answer(
+        f"⚙️ Группа «{g.name}»\n"
+        f"👥 Учеников: {n}\n"
+        f"📚 Разделы: {sec_names}\n\n"
+        "Что можно сделать:\n"
+        "🔗 Ссылка — отправь её ученикам, они сами запишутся в эту группу.\n"
+        "📚 Разделы — создать предмет (Анатомия и т.п.), поменять его название, "
+        "число недель РТ или количество практик.\n"
+        "✏️ Переименовать — изменить название группы.\n"
+        "📦 Выгрузить — получить Excel и все PDF работ.\n"
+        "🗑 Удалить — убрать группу со всеми учениками (история сохранится).",
+        reply_markup=kb)
+
+
+# ── переименование группы ──
+@router.callback_query(F.data.startswith("cur_ren:"))
+async def rename_group_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    await state.set_state(CuratorStates.rename_group)
+    await state.update_data(ren_gid=gid)
+    await call.message.answer(
+        f"✏️ Сейчас группа называется «{g.name}».\n"
+        "Напиши новое название одним сообщением — и я сразу его сохраню.\n"
+        "Например: 4 поток")
+
+
+@router.message(CuratorStates.rename_group, F.text)
+async def rename_group_do(message: Message, state: FSMContext):
+    data = await state.get_data()
+    gid = data.get("ren_gid")
+    new_name = message.text.strip()[:128]
+    await crud.rename_group(gid, new_name)
+    await state.clear()
+    await message.answer(f"✅ Готово! Группа теперь называется «{new_name}».\n"
+                         "Ссылка для учеников осталась прежней — менять её не нужно.")
+
+
+# ── разделы группы: список и редактирование ──
+@router.callback_query(F.data.startswith("cur_secs:"))
+async def group_sections(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    secs = await crud.get_sections(gid)
+    rows = [[InlineKeyboardButton(text=f"📚 {s.name} · РТ: {s.weeks} нед · практик: {s.practices}",
+                                  callback_data=f"cur_secedit:{s.id}")] for s in secs]
+    rows.append([InlineKeyboardButton(text="➕ Добавить раздел", callback_data=f"cur_addsec:{gid}")])
+    await call.message.answer(
+        f"📚 Разделы группы «{g.name}».\n"
+        "Раздел — это предмет (например, Анатомия). Внутри него ученики сдают РТ по неделям "
+        "и практику.\n\nНажми на раздел, чтобы изменить его, или создай новый 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("cur_secedit:"))
+async def section_edit(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    sec = await crud.get_section(sid)
+    if not sec or sec.curator_id != call.from_user.id:
+        await call.message.answer("❌ Раздел не найден.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Переименовать раздел", callback_data=f"cur_secren:{sid}")],
+        [InlineKeyboardButton(text="📆 Изменить дату начала", callback_data=f"cur_secdate:{sid}")],
+        [InlineKeyboardButton(text="📅 Изменить недели РТ", callback_data=f"cur_secwks:{sid}")],
+        [InlineKeyboardButton(text="📷 Изменить число практик", callback_data=f"cur_secprc:{sid}")],
+        [InlineKeyboardButton(text="🗑 Удалить раздел", callback_data=f"cur_delsec:{sid}")],
+    ])
+    cur = roles.section_current_week(sec)
+    cur_txt = ("ещё не начался" if cur == 0 else
+               (f"идёт неделя {cur}" if cur <= sec.weeks else "все недели прошли"))
+    await call.message.answer(
+        f"📚 Раздел «{sec.name}»\n"
+        f"📆 Старт: {roles.section_start_str(sec)} · сейчас {cur_txt}\n"
+        f"📅 Недель РТ: {sec.weeks} (неделя 1 — до {roles.section_deadline_str(sec, 1)})\n"
+        f"📷 Практик: {sec.practices}\n\n"
+        "Выбери, что изменить 👇\n"
+        "Уже сданные работы при изменении не пропадают.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_secdate:"))
+async def section_setdate_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    await state.set_state(CuratorStates.sec_setdate)
+    await state.update_data(secdate_id=sid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📆 Сегодня", callback_data="cur_setdate:today"),
+         InlineKeyboardButton(text="📆 Завтра", callback_data="cur_setdate:tomorrow")],
+        [InlineKeyboardButton(text="📆 С понедельника", callback_data="cur_setdate:monday")],
+    ])
+    await call.message.answer(
+        "📆 С какого дня считать этот раздел?\n"
+        "Выбери кнопкой или напиши дату: ДД.ММ.ГГГГ 👇", reply_markup=kb)
+
+
+@router.callback_query(CuratorStates.sec_setdate, F.data.startswith("cur_setdate:"))
+async def section_setdate_btn(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    which = call.data.split(":")[1]
+    today = roles.now_local().date()
+    if which == "today":
+        d = today
+    elif which == "tomorrow":
+        d = today + timedelta(days=1)
+    else:
+        d = today + timedelta(days=(0 - today.weekday()) % 7)
+    await _apply_section_date(call.message, state, d)
+
+
+@router.message(CuratorStates.sec_setdate, F.text)
+async def section_setdate_text(message: Message, state: FSMContext):
+    d = _parse_date(message.text)
+    if not d:
+        await message.answer("❌ Не понял дату. Напиши ДД.ММ.ГГГГ, например 16.06.2025.")
+        return
+    await _apply_section_date(message, state, d)
+
+
+async def _apply_section_date(target, state: FSMContext, d):
+    data = await state.get_data()
+    sid = data.get("secdate_id")
+    await crud.update_section(sid, start_date=_local_midnight(d))
+    await state.clear()
+    sec = await crud.get_section(sid)
+    await target.answer(
+        f"✅ Готово! Раздел «{sec.name}» теперь стартует {roles.section_start_str(sec)}.\n"
+        f"Неделя 1 идёт до {roles.section_deadline_str(sec, 1)}. Сданные работы не тронуты.")
+
+
+@router.callback_query(F.data.startswith("cur_secren:"))
+async def section_rename_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    await state.set_state(CuratorStates.sec_rename)
+    await state.update_data(secren_id=sid)
+    await call.message.answer("✏️ Напиши новое название раздела одним сообщением.\n"
+                              "Например: Зоология")
+
+
+@router.message(CuratorStates.sec_rename, F.text)
+async def section_rename_do(message: Message, state: FSMContext):
+    data = await state.get_data()
+    sid = data.get("secren_id")
+    new_name = message.text.strip()[:128]
+    await crud.update_section(sid, name=new_name)
+    await state.clear()
+    await message.answer(f"✅ Раздел теперь называется «{new_name}». Все сданные работы на месте.")
+
+
+@router.callback_query(F.data.startswith("cur_secwks:"))
+async def section_weeks_pick(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    row1 = [InlineKeyboardButton(text=str(w), callback_data=f"cur_secwkset:{sid}:{w}")
+            for w in (3, 4, 5, 6)]
+    row2 = [InlineKeyboardButton(text=str(w), callback_data=f"cur_secwkset:{sid}:{w}")
+            for w in (7, 8, 9, 10)]
+    await call.message.answer(
+        "📅 Сколько недель будут сдавать РТ в этом разделе?\n"
+        "Нажми на число 👇 (обычно 4–6)",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[row1, row2]))
+
+
+@router.callback_query(F.data.startswith("cur_secwkset:"))
+async def section_weeks_set(call: CallbackQuery):
+    await call.answer()
+    _, sid, w = call.data.split(":")
+    await crud.update_section(int(sid), weeks=int(w))
+    sec = await crud.get_section(int(sid))
+    await call.message.answer(
+        f"✅ Готово! В разделе «{sec.name}» теперь {w} недель РТ.\n"
+        f"Ученики увидят кнопки «Неделя 1…{w}» при сдаче конспекта.")
+
+
+@router.callback_query(F.data.startswith("cur_secprc:"))
+async def section_prc_pick(call: CallbackQuery):
+    await call.answer()
+    sid = int(call.data.split(":")[1])
+    row = [InlineKeyboardButton(text=str(p), callback_data=f"cur_secprcset:{sid}:{p}")
+           for p in (1, 2, 3, 4)]
+    await call.message.answer(
+        "📷 Сколько практик сдают в этом разделе?\n"
+        "Нажми на число 👇 (обычно 2 — два раза в месяц)",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]))
+
+
+@router.callback_query(F.data.startswith("cur_secprcset:"))
+async def section_prc_set(call: CallbackQuery):
+    await call.answer()
+    _, sid, p = call.data.split(":")
+    await crud.update_section(int(sid), practices=int(p))
+    sec = await crud.get_section(int(sid))
+    await call.message.answer(
+        f"✅ Готово! В разделе «{sec.name}» теперь {p} практик(и).\n"
+        f"Ученики увидят кнопки «Практика 1…{p}» при сдаче.")
 
 
 @router.callback_query(F.data.startswith("cur_link:"))
@@ -60,18 +303,65 @@ async def group_link(call: CallbackQuery, bot: Bot):
         return
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start={g.token}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 Сменить ссылку", callback_data=f"cur_newlink:{gid}")
+    ]])
     await call.message.answer(
         f"🔗 Ссылка для группы «{g.name}»:\n\n{link}\n\n"
         "Отправь её ученикам этой группы. Они откроют, введут имя и фамилию — "
         "и сами попадут в группу, увидят видео-инструкцию и смогут сдавать РТ.\n"
-        "Код в ссылке уникальный и случайный — попасть в группу можно только по ней.")
+        "Код в ссылке уникальный и случайный — попасть в группу можно только по ней.\n\n"
+        "🔄 Если ссылка попала к лишним людям — нажми «Сменить ссылку»: "
+        "старая перестанет работать, и нужно будет разослать новую.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_newlink:"))
+async def regen_link_confirm(call: CallbackQuery):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, сменить", callback_data=f"cur_newlink_yes:{gid}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cur_cancel"),
+    ]])
+    await call.message.answer(
+        f"🔄 Сменить ссылку для группы «{g.name}»?\n\n"
+        "⚠️ Старая ссылка сразу перестанет работать — кто по ней ещё не зашёл, "
+        "по старой больше не попадёт.\n"
+        "Уже добавленные ученики останутся в группе, им ничего делать не нужно.\n"
+        "Новую ссылку нужно будет разослать заново.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cur_newlink_yes:"))
+async def regen_link_do(call: CallbackQuery, bot: Bot):
+    await call.answer()
+    gid = int(call.data.split(":")[1])
+    g = await crud.get_group(gid)
+    if not g or g.curator_id != call.from_user.id:
+        await call.message.answer("❌ Группа не найдена.")
+        return
+    token = await crud.regenerate_token(gid)
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={token}"
+    await call.message.answer(
+        f"✅ Готово! Новая ссылка для группы «{g.name}»:\n\n{link}\n\n"
+        "Старая больше не работает. Разошли эту ссылку ученикам, "
+        "которым ещё нужно записаться.")
 
 
 @router.callback_query(F.data == "cur_new_group")
 async def new_group_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await state.set_state(CuratorStates.create_group)
-    await call.message.answer("Введи название новой группы:")
+    await call.message.answer(
+        "➕ Создаём новую группу.\n"
+        "Группа — это твой класс или поток учеников (например «3 поток»).\n"
+        "Напиши её название одним сообщением 👇")
 
 
 @router.message(CuratorStates.create_group, F.text)
@@ -252,7 +542,11 @@ async def del_group_do(call: CallbackQuery, bot: Bot):
 @router.message(F.text == "➕ Добавить")
 async def add_menu(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Кого добавить?", reply_markup=add_choice())
+    await message.answer(
+        "➕ Добавляем учеников.\n"
+        "Самый простой способ — отправить им ссылку группы (📂 Мои группы → ⚙️ группа → 🔗 Ссылка): "
+        "они запишутся сами.\n"
+        "Либо добавь вручную — одного или сразу списком 👇", reply_markup=add_choice())
 
 
 @router.callback_query(F.data == "cur_add_one")
@@ -293,6 +587,31 @@ async def add_one_finish(call: CallbackQuery, state: FSMContext, bot: Bot):
     gid = int(call.data.split(":")[1])
     data = await state.get_data()
     g = await crud.get_group(gid)
+
+    # антидублирование: такой ученик уже есть (у любого куратора)?
+    dup = await crud.find_student_duplicate(
+        call.from_user.id, data.get("username"), data.get("user_id"),
+        data.get("first"), data.get("last"))
+    if dup:
+        dg = await crud.get_group(dup.group_id)
+        await state.clear()
+        if dup.curator_id == call.from_user.id:
+            await call.message.answer(
+                f"⚠️ Ты уже добавлял(а) этого ученика: {dup.first_name} {dup.last_name} — "
+                f"он в твоей группе «{dg.name if dg else '—'}».\n"
+                "Повторно добавлять не нужно, иначе появятся двойники.\n"
+                "Если хочешь перенести его в другую группу — сначала удали из старой "
+                "(👥 Мои ученики → ➖ Удалить), потом добавь заново.")
+        else:
+            who = await crud.curator_label(dup.curator_id)
+            await call.message.answer(
+                f"⚠️ Этого ученика ({dup.first_name} {dup.last_name}) уже добавил "
+                f"куратор {who} — в группу «{dg.name if dg else '—'}».\n"
+                "Один ученик не может быть у двух кураторов одновременно.\n"
+                "Если он должен быть у тебя — попроси того куратора удалить его, "
+                "либо свяжись с администратором.")
+        return
+
     st = await crud.add_student(
         first_name=data["first"], last_name=data["last"], username=data.get("username"),
         user_id=data.get("user_id"), group_id=gid, curator_id=call.from_user.id,
@@ -372,14 +691,35 @@ async def add_bulk_finish(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     g = await crud.get_group(gid)
     items = data.get("bulk", [])
-    n = await crud.add_students_bulk(items, group_id=gid, curator_id=call.from_user.id)
+    fresh, skipped = [], []
+    for p in items:
+        dup = await crud.find_student_duplicate(
+            call.from_user.id, p.get("username"), p.get("user_id"),
+            p.get("first"), p.get("last"))
+        if dup:
+            dg = await crud.get_group(dup.group_id)
+            gname = dg.name if dg else "—"
+            if dup.curator_id == call.from_user.id:
+                skipped.append(f"{p['first']} {p['last']} — уже у тебя в «{gname}»")
+            else:
+                who = await crud.curator_label(dup.curator_id)
+                skipped.append(f"{p['first']} {p['last']} — уже у куратора {who} в «{gname}»")
+        else:
+            fresh.append(p)
+    n = await crud.add_students_bulk(fresh, group_id=gid, curator_id=call.from_user.id) if fresh else 0
     total = await crud.count_students(gid)
     lines = [f"✅ Добавлено {n} учеников в «{g.name}»."]
-    for p in items[:15]:
+    for p in fresh[:15]:
         tail = f"(@{p['username']})" if p.get("username") else (f"({p['user_id']})" if p.get("user_id") else "")
         lines.append(f"   ✅ {p['first']} {p['last']} {tail}")
     if n > 15:
         lines.append(f"   … и ещё {n - 15}")
+    if skipped:
+        lines.append(f"\n⚠️ Пропущено {len(skipped)} — уже добавлены раньше (антидублирование):")
+        for s_ in skipped[:12]:
+            lines.append(f"   • {s_}")
+        if len(skipped) > 12:
+            lines.append(f"   … и ещё {len(skipped) - 12}")
     lines.append(f"\nВсего в группе: {total} учеников.")
     lines.append("\n❗ Каждый ученик должен сам открыть бота и нажать /start "
                  "(по тому же @username), тогда бот его узнает. Написать им первым бот не может.")
@@ -393,7 +733,10 @@ async def add_bulk_finish(call: CallbackQuery, state: FSMContext):
 async def search_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(CuratorStates.search)
-    await message.answer("🔍 Введи имя или фамилию ученика (можно часть):")
+    await message.answer(
+        "🔍 Поиск ученика.\n"
+        "Напиши имя или фамилию (можно только часть, например «Асан») — \n"
+        "я найду ученика и покажу его работы 👇")
 
 
 @router.message(CuratorStates.search, F.text)
@@ -443,8 +786,10 @@ async def broadcast_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(CuratorStates.broadcast)
     await message.answer(
-        "📢 Напиши текст объявления — я отправлю его всем твоим ученикам, "
-        "которые уже запускали бота.\n\nИли /cancel чтобы отменить.")
+        "📢 Рассылка — это объявление сразу всем твоим ученикам.\n"
+        "Например: «Дедлайн перенесён на субботу».\n\n"
+        "Напиши текст одним сообщением — и я разошлю его всем, кто уже запускал бота.\n"
+        "Передумал(а)? Напиши /cancel.")
 
 
 @router.message(CuratorStates.broadcast, F.text)
@@ -526,7 +871,7 @@ async def export_group_all(call: CallbackQuery, bot: Bot):
     await call.message.answer(f"✅ Выгружено {sent} PDF. Можешь переслать их в нужный чат.")
 
 
-# ─── КТО СДАЛ (по разделам и неделям) ───────────────────────────
+# ─── КТО СДАЛ (РТ и практика — раздельно) ──────────────────────
 
 @router.message(F.text == "📥 Кто сдал РТ")
 async def who_rt_pick(message: Message, state: FSMContext):
@@ -607,26 +952,37 @@ async def _show_week(call: CallbackQuery, sid: int, week: int, sub_type: str):
     for sub in subs:
         last.setdefault(sub.student_id, sub)
 
-    kind = "📷 Практика" if sub_type == "practice" else "📄 Конспекты (РТ)"
-    icon = "📷" if sub_type == "practice" else "📄"
-    lines = [f"{kind} · {sec.name} · Неделя {week} из {sec.weeks}", f"Группа «{g.name}»\n"]
+    is_prac = sub_type == "practice"
+    kind = "📷 Практика" if is_prac else "📄 Конспекты (РТ)"
+    icon = "📷" if is_prac else "📄"
+    total = (max(1, getattr(sec, "practices", 2) or 2)) if is_prac else sec.weeks
+    wk_word = f"Практика {week} из {total}" if is_prac else f"Неделя {week} из {total}"
+    lines = [f"{kind} · {sec.name} · {wk_word}", f"Группа «{g.name}»\n"]
     pdf_rows = []
     done = 0
     for st in students:
         sub = last.get(st.id)
         if sub:
             done += 1
-            mark = " ⚠️" if sub.is_late else ""
-            lines.append(f"   ✅ {st.first_name} {st.last_name}{mark} · "
-                         f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+            if sub.is_late:
+                mins = sub.late_by_minutes
+                lt = (f"{mins} мин" if mins < 60 else
+                      (f"{mins//60} ч" if mins < 1440 else f"{mins//1440} дн"))
+                lines.append(f"   ⚠️ {st.first_name} {st.last_name} · ПРОСРОЧЕНО +{lt} · "
+                             f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
+            else:
+                lines.append(f"   ✅ {st.first_name} {st.last_name} · "
+                             f"{roles.to_local(sub.submitted_at_utc):%d.%m %H:%M}")
             pdf_rows.append(InlineKeyboardButton(
-                text=f"{icon} {st.first_name}{mark}", callback_data=f"open_sub:{sub.id}"))
+                text=f"{icon} {st.first_name}" + (" ⚠️" if sub.is_late else ""),
+                callback_data=f"open_sub:{sub.id}"))
     lines.append(f"\nСдали: {done} из {len(students)} | Не сдали: {len(students) - done}")
 
     rows = [pdf_rows[j:j+2] for j in range(0, len(pdf_rows), 2)]
     nav = []
-    for w in range(1, sec.weeks + 1):
-        label = f"·{w}·" if w == week else str(w)
+    for w in range(1, total + 1):
+        prefix = "Практика " if is_prac else ""
+        label = f"·{prefix}{w}·" if w == week else f"{prefix}{w}"
         nav.append(InlineKeyboardButton(text=label, callback_data=f"cur_wk:{sid}:{w}:{sub_type}"))
     rows += [nav[j:j+5] for j in range(0, len(nav), 5)]
     rows.append([InlineKeyboardButton(text="📊 Excel раздела", callback_data=f"cur_secxls:{sid}"),
@@ -674,7 +1030,11 @@ async def add_section_start(call: CallbackQuery, state: FSMContext):
     gid = int(call.data.split(":")[1])
     await state.set_state(CuratorStates.new_section_name)
     await state.update_data(sec_gid=gid)
-    await call.message.answer("📚 Введи название раздела (например: Анатомия, Ботаника):")
+    await call.message.answer(
+        "📚 Создаём раздел.\n"
+        "Раздел — это предмет, который сейчас проходят ученики (например Анатомия).\n"
+        "Внутри раздела они будут сдавать конспекты по неделям и практику.\n\n"
+        "Напиши название раздела одним сообщением 👇")
 
 
 @router.message(CuratorStates.new_section_name, F.text)
@@ -682,7 +1042,9 @@ async def add_section_name(message: Message, state: FSMContext):
     await state.update_data(sec_name=message.text.strip())
     await state.set_state(CuratorStates.new_section_weeks)
     rows = [[InlineKeyboardButton(text=str(w), callback_data=f"cur_secwk:{w}") for w in (4, 5, 6)]]
-    await message.answer("Сколько недель в этом разделе?",
+    await message.answer(
+        "Сколько недель ученики будут сдавать конспекты (РТ) по этому разделу?\n"
+        "Обычно 4–6. Нажми на число 👇",
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -690,24 +1052,74 @@ async def add_section_name(message: Message, state: FSMContext):
 async def add_section_weeks(call: CallbackQuery, state: FSMContext):
     await call.answer()
     weeks = int(call.data.split(":")[1])
-    data = await state.get_data()
-    gid = data["sec_gid"]
-    sec = await crud.create_section(gid, call.from_user.id, data["sec_name"], weeks)
-    await state.clear()
-    g = await crud.get_group(gid)
-    await call.message.answer(
-        f"✅ Раздел «{sec.name}» создан в группе «{g.name}» на {weeks} недель.\n"
-        "Теперь ученики смогут сдавать РТ по неделям этого раздела.")
+    await state.update_data(sec_weeks=weeks)
+    await _ask_section_start(call.message, state)
 
 
 @router.message(CuratorStates.new_section_weeks, F.text.regexp(r"^\d+$"))
 async def add_section_weeks_text(message: Message, state: FSMContext):
     weeks = max(1, min(20, int(message.text)))
+    await state.update_data(sec_weeks=weeks)
+    await _ask_section_start(message, state)
+
+
+async def _ask_section_start(target, state: FSMContext):
+    await state.set_state(CuratorStates.new_section_start)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📆 Сегодня", callback_data="cur_secstart:today"),
+         InlineKeyboardButton(text="📆 Завтра", callback_data="cur_secstart:tomorrow")],
+        [InlineKeyboardButton(text="📆 С понедельника", callback_data="cur_secstart:monday")],
+    ])
+    await target.answer(
+        "📆 С какого дня начинается этот раздел?\n"
+        "От этой даты бот считает недели по 7 дней: неделя 1 — первые 7 дней, потом неделя 2 и т.д.\n\n"
+        "Выбери кнопкой или напиши дату числом: <b>ДД.ММ.ГГГГ</b> (например 16.06.2025) 👇",
+        parse_mode="HTML", reply_markup=kb)
+
+
+def _local_midnight(d) -> datetime:
+    """date (локальная) → datetime в UTC, соответствующий локальной полуночи."""
+    local = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=TZ_ASTANA)
+    return local.astimezone(timezone.utc)
+
+
+async def _create_section_with_start(target, state: FSMContext, curator_id: int, start_dt):
     data = await state.get_data()
     gid = data["sec_gid"]
-    sec = await crud.create_section(gid, message.from_user.id, data["sec_name"], weeks)
+    sec = await crud.create_section(gid, curator_id, data["sec_name"],
+                                    data.get("sec_weeks", 4), start_date=start_dt)
     await state.clear()
-    await message.answer(f"✅ Раздел «{sec.name}» создан на {weeks} недель.")
+    g = await crud.get_group(gid)
+    await target.answer(
+        f"✅ Раздел «{sec.name}» создан в группе «{g.name}».\n"
+        f"📅 Недель: {sec.weeks} · старт {roles.section_start_str(sec)}\n"
+        f"Неделя 1 идёт до {roles.section_deadline_str(sec, 1)}.\n\n"
+        "Ученики смогут сдавать РТ по текущей неделе. За будущие недели бот сдавать не даст, "
+        "за прошедшие — спросит подтверждение и пометит как просрочку.")
+
+
+@router.callback_query(CuratorStates.new_section_start, F.data.startswith("cur_secstart:"))
+async def add_section_start_btn(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    which = call.data.split(":")[1]
+    today = roles.now_local().date()
+    if which == "today":
+        d = today
+    elif which == "tomorrow":
+        d = today + timedelta(days=1)
+    else:  # monday — ближайший будущий понедельник (или сегодня, если пн)
+        ahead = (0 - today.weekday()) % 7
+        d = today + timedelta(days=ahead)
+    await _create_section_with_start(call.message, state, call.from_user.id, _local_midnight(d))
+
+
+@router.message(CuratorStates.new_section_start, F.text)
+async def add_section_start_text(message: Message, state: FSMContext):
+    d = _parse_date(message.text)
+    if not d:
+        await message.answer("❌ Не понял дату. Напиши в виде ДД.ММ.ГГГГ, например 16.06.2025.")
+        return
+    await _create_section_with_start(message, state, message.from_user.id, _local_midnight(d))
 
 
 # ── Excel по разделу ──
