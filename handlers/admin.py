@@ -20,7 +20,7 @@ from keyboards.admin_kb import (
     backup_menu,
     curators_menu,
 )
-from services import backup, restore, roles
+from services import backup, restore, roles, sheets
 from states.fsm_states import AdminStates
 
 router = Router()
@@ -34,14 +34,137 @@ router.callback_query.filter(RoleFilter("admin"))
 async def curators(message: Message, state: FSMContext):
     await state.clear()
     cur = await crud.get_curators()
-    lines = ["👨‍🏫 Кураторы:"]
+    lines = ["👨‍🏫 Кураторы. Нажми на куратора, чтобы открыть его карточку",
+             "(добавить ему учеников, список учеников, снять роль):\n"]
+    rows = []
     if cur:
         for i, c in enumerate(cur, start=1):
             uname = f" (@{c.username})" if c.username else ""
-            lines.append(f"   {i}. {c.first_name or ''} {c.last_name or ''}{uname}".rstrip())
+            name = f"{c.first_name or ''} {c.last_name or ''}".strip() or str(c.telegram_id)
+            lines.append(f"   {i}. {name}{uname}")
+            rows.append([InlineKeyboardButton(text=f"👤 {name}", callback_data=f"adm_cur:{c.telegram_id}")])
     else:
         lines.append("   (пока нет кураторов)")
-    await message.answer("\n".join(lines), reply_markup=curators_menu())
+    rows.append([InlineKeyboardButton(text="➕ Назначить нового куратора", callback_data="adm_add_curator")])
+    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("adm_cur:"))
+async def curator_card(call: CallbackQuery):
+    await call.answer()
+    tg_id = int(call.data.split(":")[1])
+    u = await crud.get_user_by_tg(tg_id)
+    name = (f"{u.first_name or ''} {u.last_name or ''}".strip() if u else None) or str(tg_id)
+    groups = await crud.get_groups(curator_id=tg_id, include_hidden=True)
+    total_students = sum([await crud.count_students(g.id) for g in groups]) if groups else 0
+    gnames = ", ".join(g.name for g in groups) if groups else "пока нет групп"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить учеников", callback_data=f"adm_curadd:{tg_id}")],
+        [InlineKeyboardButton(text="👥 Список учеников", callback_data=f"adm_curlist:{tg_id}")],
+        [InlineKeyboardButton(text="➖ Снять роль куратора", callback_data=f"adm_delcur:{tg_id}")],
+    ])
+    await call.message.answer(
+        f"👤 Куратор: {name}\n"
+        f"📂 Группы: {gnames}\n"
+        f"👥 Всего учеников: {total_students}\n\n"
+        "Что сделать?\n"
+        "➕ Добавить учеников — выбрать группу и записать учеников за куратора.\n"
+        "👥 Список учеников — посмотреть всех его учеников по группам.",
+        reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm_curlist:"))
+async def curator_students_list(call: CallbackQuery):
+    await call.answer()
+    tg_id = int(call.data.split(":")[1])
+    groups = await crud.get_groups(curator_id=tg_id, include_hidden=True)
+    if not groups:
+        await call.message.answer("У этого куратора пока нет групп.")
+        return
+    lines = ["👥 Ученики куратора по группам:\n"]
+    for g in groups:
+        studs = await crud.get_students(curator_id=tg_id, group_id=g.id)
+        tag = " 🗄(архив)" if getattr(g, "hidden", False) else ""
+        lines.append(f"📂 <b>{g.name}</b>{tag} — {len(studs)} уч.")
+        for st in studs:
+            uname = f" (@{st.username})" if st.username else ""
+            lines.append(f"   • {st.first_name} {st.last_name}{uname}")
+        lines.append("")
+    await call.message.answer("\n".join(lines)[:4000], parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_curadd:"))
+async def curator_add_pick_group(call: CallbackQuery):
+    await call.answer()
+    tg_id = int(call.data.split(":")[1])
+    groups = await crud.get_groups(curator_id=tg_id, include_hidden=True)
+    if not groups:
+        await call.message.answer(
+            "У куратора пока нет групп — он создаёт их сам в «📂 Мои группы».\n"
+            "Как создаст хотя бы одну, сможешь добавлять в неё учеников отсюда.")
+        return
+    rows = [[InlineKeyboardButton(text=f"📂 {g.name}", callback_data=f"adm_curaddg:{tg_id}:{g.id}")]
+            for g in groups]
+    await call.message.answer("В какую группу добавить учеников?",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("adm_curaddg:"))
+async def curator_add_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    _, tg_id, gid = call.data.split(":")
+    await state.set_state(AdminStates.add_students_for)
+    await state.update_data(target_curator=int(tg_id), target_group=int(gid))
+    g = await crud.get_group(int(gid))
+    await call.message.answer(
+        f"➕ Добавляем учеников в группу «{g.name}» (за куратора).\n\n"
+        "Напиши учеников — по одному на строке, в формате:\n"
+        "<b>Имя Фамилия @username</b>\n"
+        "(@username по желанию, но с ним бот точно узнает ученика).\n\n"
+        "Например:\nАйша Нур @aisha\nДанияр Серик\n\n"
+        "Можно сразу несколько строк 👇",
+        parse_mode="HTML")
+
+
+@router.message(AdminStates.add_students_for, F.text)
+async def curator_add_do(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    cur_id = data["target_curator"]
+    gid = data["target_group"]
+    await state.clear()
+    g = await crud.get_group(gid)
+    added, skipped = [], []
+    for line in message.text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        username = None
+        parts = []
+        for tok in line.split():
+            if tok.startswith("@"):
+                username = tok[1:]
+            else:
+                parts.append(tok)
+        first = parts[0] if parts else "Ученик"
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+        dup = await crud.find_student_duplicate(cur_id, username, None, first, last)
+        if dup:
+            dg = await crud.get_group(dup.group_id)
+            skipped.append(f"{first} {last} — уже есть в «{dg.name if dg else '—'}»")
+            continue
+        await crud.add_student(first_name=first, last_name=last, username=username,
+                               user_id=None, group_id=gid, curator_id=cur_id)
+        added.append(f"{first} {last}" + (f" (@{username})" if username else ""))
+    lines = [f"✅ В группу «{g.name}» добавлено: {len(added)}"]
+    for a in added[:20]:
+        lines.append(f"   ✅ {a}")
+    if skipped:
+        lines.append(f"\n⚠️ Пропущено (дубли): {len(skipped)}")
+        for s_ in skipped[:10]:
+            lines.append(f"   • {s_}")
+    lines.append("\n❗ Чтобы бот мог писать ученику сам, ученик должен открыть бота и нажать /start "
+                 "(по тому же @username) или зайти по ссылке группы.")
+    await message.answer("\n".join(lines)[:4000], reply_markup=admin_menu())
 
 
 @router.callback_query(F.data == "adm_add_curator")
@@ -368,25 +491,63 @@ async def restore_do(call: CallbackQuery, state: FSMContext):
 async def gsheets(message: Message, state: FSMContext):
     await state.clear()
     current = await crud.get_setting("gsheet_url")
-    cur_line = f"\nТекущая таблица: {current}" if current else ""
     await state.set_state(AdminStates.gsheet_wait_url)
-    await message.answer(
-        "📊 Google Sheets — живой журнал сдач.\n"
-        "Пришли ссылку на таблицу (доступ должен быть выдан service-аккаунту)."
-        f"{cur_line}"
-    )
+    if current:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить журнал сейчас", callback_data="adm_sheet_sync")],
+        ])
+        await message.answer(
+            "📊 Google Sheets — живой журнал сдач.\n"
+            f"Текущая таблица подключена:\n{current}\n\n"
+            "В таблице два листа:\n"
+            "• «Журнал» — структурно: группа → куратор, год и время создания → разделы "
+            "(с датами и периодом) → недели (с дедлайном) → ученики (вовремя/просрочено/не сдал).\n"
+            "• «Лента сдач» — каждая новая работа отдельной строкой.\n\n"
+            "Журнал обновляется сам после каждой сдачи. Можно обновить вручную 👇\n\n"
+            "Чтобы сменить таблицу — пришли новую ссылку.",
+            reply_markup=kb)
+    else:
+        await message.answer(
+            "📊 Google Sheets — живой журнал сдач.\n\n"
+            "Как подключить:\n"
+            "1. Создай таблицу в Google Sheets.\n"
+            "2. Нажми «Настройки доступа» (Share) и добавь как «Редактор» service-аккаунт "
+            "(его email тебе дал разработчик, вида …@…iam.gserviceaccount.com).\n"
+            "3. Скопируй ссылку на таблицу и пришли её сюда 👇\n\n"
+            "После этого бот сам заполнит листы «Журнал» и «Лента сдач».")
+
+
+@router.callback_query(F.data == "adm_sheet_sync")
+async def gsheets_sync(call: CallbackQuery):
+    await call.answer("Обновляю…")
+    ok = await sheets.rebuild_journal()
+    if ok:
+        await call.message.answer("✅ Журнал в Google Sheets обновлён.")
+    else:
+        await call.message.answer(
+            "⚠️ Не получилось обновить. Проверь, что таблица доступна service-аккаунту "
+            "(права «Редактор») и ссылка верная.")
 
 
 @router.message(AdminStates.gsheet_wait_url, F.text)
 async def gsheets_save(message: Message, state: FSMContext):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.answer("⚠️ Нужна ссылка на Google-таблицу.")
+        await message.answer("⚠️ Нужна ссылка на Google-таблицу (начинается с https://).")
         return
     await crud.set_setting("gsheet_url", url)
     await state.clear()
-    await message.answer("✅ Таблица подключена. Новые сдачи будут дублироваться туда.",
-                         reply_markup=admin_menu())
+    await message.answer("✅ Таблица подключена. Заполняю журнал…", reply_markup=admin_menu())
+    ok = await sheets.rebuild_journal()
+    if ok:
+        await message.answer(
+            "✅ Готово! Открой таблицу — там листы «Журнал» (структурно по группам и разделам) "
+            "и «Лента сдач». Дальше всё обновляется автоматически.")
+    else:
+        await message.answer(
+            "⚠️ Таблица сохранена, но записать в неё не вышло.\n"
+            "Проверь, что ты дал доступ «Редактор» именно service-аккаунту "
+            "(email …@…iam.gserviceaccount.com), и что ссылка ведёт на саму таблицу.")
 
 
 # ─── ВИДЕО-ИНСТРУКЦИЯ ───────────────────────────────────────────
