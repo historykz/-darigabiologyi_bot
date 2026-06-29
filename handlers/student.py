@@ -360,14 +360,7 @@ async def _go_photos(target, state: FSMContext, sec, week: int, sub_type: str):
 
 @router.message(StudentStates.submit_photos, F.photo)
 async def collect_photo(message: Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("photos", [])
-    photos.append(message.photo[-1].file_id)
-    await state.update_data(photos=photos)
-    await message.answer(
-        f"📸 Принято фото №{len(photos)}.\n"
-        "Шли ещё страницы или нажми «📄 Отправить в PDF».",
-        reply_markup=send_pdf_kb())
+    await _add_photo(message, state, message.photo[-1].file_id, message.bot)
 
 
 @router.message(StudentStates.submit_photos, F.document)
@@ -376,19 +369,40 @@ async def collect_photo_doc(message: Message, state: FSMContext):
     doc = message.document
     mime = (doc.mime_type or "").lower()
     if mime.startswith("image/"):
-        data = await state.get_data()
-        photos = data.get("photos", [])
-        photos.append(doc.file_id)
-        await state.update_data(photos=photos)
-        await message.answer(
-            f"📸 Принято фото №{len(photos)} (файлом).\n"
-            "Шли ещё или нажми «📄 Отправить в PDF».",
-            reply_markup=send_pdf_kb())
+        await _add_photo(message, state, doc.file_id, message.bot)
     else:
         await message.answer(
             "❗ Это не картинка. Пришли снимок экрана или фото страницы "
             "(обычным изображением). PDF-файлы прикреплять не нужно — я сам соберу PDF из фото.",
             reply_markup=send_pdf_kb())
+
+
+async def _add_photo(message: Message, state: FSMContext, file_id: str, bot: Bot):
+    """Добавляет фото в список, сохраняя порядок отправки (по message_id),
+    и обновляет ОДНО сообщение-счётчик вместо спама на каждое фото."""
+    data = await state.get_data()
+    # храним пары [message_id, file_id] — message_id растёт по порядку отправки
+    photos = data.get("photos", [])
+    photos.append([message.message_id, file_id])
+    counter_id = data.get("counter_msg_id")
+    await state.update_data(photos=photos)
+
+    n = len(photos)
+    text = (f"📸 Принимаю фото… Принято: {n}\n"
+            "Можешь слать ещё страницы по порядку. Когда всё — нажми «📄 Отправить в PDF».")
+    # пробуем обновить уже отправленный счётчик; если нельзя — шлём один новый
+    if counter_id:
+        try:
+            await bot.edit_message_text(chat_id=message.chat.id, message_id=counter_id,
+                                        text=text, reply_markup=send_pdf_kb())
+            return
+        except Exception:
+            pass
+    try:
+        sent = await message.answer(text, reply_markup=send_pdf_kb())
+        await state.update_data(counter_msg_id=sent.message_id)
+    except Exception:
+        pass
 
 
 @router.message(StudentStates.submit_photos)
@@ -406,7 +420,16 @@ async def submit_photos_hint(message: Message, state: FSMContext):
 async def make_pdf(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     data = await state.get_data()
-    photos: list[str] = data.get("photos", [])
+    raw_photos = data.get("photos", [])
+    # сортируем по message_id (порядок отправки учеником), затем берём file_id
+    ordered = []
+    for item in raw_photos:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            ordered.append(item)
+        else:  # старый формат (просто file_id) — на всякий случай
+            ordered.append([0, item])
+    ordered.sort(key=lambda x: x[0])
+    photos: list[str] = [fid for _mid, fid in ordered]
     _t = data.get("submit_type", "workbook")
     _w = int(data.get("week") or 0)
     if _t == "practice":
@@ -609,3 +632,4 @@ async def open_my(call: CallbackQuery):
         await call.message.answer("❌ Файл не найден.")
         return
     await call.message.answer_document(sub.pdf_file_id)
+
