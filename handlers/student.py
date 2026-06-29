@@ -632,4 +632,3 @@ async def open_my(call: CallbackQuery):
         await call.message.answer("❌ Файл не найден.")
         return
     await call.message.answer_document(sub.pdf_file_id)
-
